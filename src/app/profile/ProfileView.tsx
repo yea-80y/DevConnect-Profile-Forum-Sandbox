@@ -1,125 +1,110 @@
 "use client";
 
+/**
+ * ProfileView (per-user topics, platform-owned feeds)
+ * ---------------------------------------------------
+ * Architecture (what we're doing):
+ * - The **platform signer** is the feed owner (does the actual writes/stamping).
+ * - The **user account (subject)** is the identity whose profile we’re viewing/editing.
+ * - We key the feed topics by **subject** so each user gets their own profile streams:
+ *      devconnect/profile/name/{subjectNo0x}
+ *      devconnect/profile/avatar/{subjectNo0x}
+ * - The payloads are small JSON blobs, written via uploadPayload():
+ *      { v, owner, subject, name }         // name feed
+ *      { v, owner, subject, imageRef }     // avatar feed (imageRef is a 64-hex BZZ reference)
+ *
+ * Why name has no "hash":
+ * - Name is mutable text, so it lives **inside the feed payload** (not /bzz).
+ * - Avatar is immutable content → uploaded to /bzz → we store its 64-hex reference in the feed.
+ */
+
 import { useEffect, useMemo, useState } from "react";
 import { Bee, Topic } from "@ethersphere/bee-js";
-import type { Bytes } from "@ethersphere/bee-js"; // Import the Bytes type so we can type the payload properly
 import Image from "next/image";
 import { BEE_URL } from "@/config/swarm";
 
-/**
- * decodeJson
- * ----------
- * - bee-js feed entries give us a `payload` typed as `Bytes | undefined`.
- * - We normalise this into a Uint8Array (required by TextDecoder).
- * - Then we try to parse it as JSON.
- * - Returns the parsed object or null if it fails.
- */
-/** Safely normalise bee-js `Bytes` into a Uint8Array */
-/** --- Helpers to decode feed payloads --- */
-function toUint8(bytes?: Bytes | null): Uint8Array | null {
-  if (!bytes) return null;
-  if (bytes instanceof Uint8Array) return bytes;
-  if (Array.isArray(bytes)) return Uint8Array.from(bytes);
-  if (typeof bytes === "string") return new TextEncoder().encode(bytes);
-  try {
-    return Uint8Array.from(bytes as unknown as ArrayLike<number>);
-  } catch {
-    return null;
-  }
-}
+type NameDoc   = { v?: number; owner?: `0x${string}`; subject?: `0x${string}`; name?: string };
+type AvatarDoc = { v?: number; owner?: `0x${string}`; subject?: `0x${string}`; imageRef?: string };
 
-function decodeText(bytes?: Bytes | null): string | null {
-  const u8 = toUint8(bytes);
-  if (!u8) return null;
-  try {
-    return new TextDecoder().decode(u8).trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-function decodeJson<T = unknown>(bytes?: Bytes | null): T | null {
-  const text = decodeText(bytes);
-  if (!text) return null;
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * ProfileView
- * - Reads two feeds owned by `owner`:
- *   1) devconnect/profile/name/{ownerNo0x}
- *   2) devconnect/profile/avatar/{ownerNo0x}
- * - Accepts either JSON payloads ({name}, {imageRef}) or raw strings (name text, 64-hex ref).
- */
-export default function ProfileView({ owner }: { owner: `0x${string}` }) {
+export default function ProfileView({
+  /** feedOwner: platform signer address (0x…) – the owner of the feeds */
+  feedOwner,
+  /** subject: user address (0x…) – used to derive the per-user topic strings */
+  subject,
+}: {
+  feedOwner: `0x${string}`;
+  subject: `0x${string}`;
+}) {
   const bee = useMemo(() => new Bee(BEE_URL), []);
   const [name, setName] = useState<string | null>(null);
   const [avatarRef, setAvatarRef] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!owner) return;
+    if (!feedOwner || !subject) return;
 
-    const ownerNo0x = owner.slice(2).toLowerCase();
-    const nameTopic = Topic.fromString(`devconnect/profile/name/${ownerNo0x}`);
-    const avatarTopic = Topic.fromString(`devconnect/profile/avatar/${ownerNo0x}`);
+    // Topics are keyed by the USER (subject), not the feed owner
+    const subjectNo0x = subject.slice(2).toLowerCase();
+    const nameTopic   = Topic.fromString(`devconnect/profile/name/${subjectNo0x}`);
+    const avatarTopic = Topic.fromString(`devconnect/profile/avatar/${subjectNo0x}`);
 
     console.log("[profile] reading feeds", {
-      nameFeed: `${BEE_URL}/feeds/${owner}/${nameTopic.toString()}`,
-      avatarFeed: `${BEE_URL}/feeds/${owner}/${avatarTopic.toString()}`,
+      nameFeed:   `${BEE_URL}/feeds/${feedOwner}/${nameTopic.toString()}`,
+      avatarFeed: `${BEE_URL}/feeds/${feedOwner}/${avatarTopic.toString()}`,
     });
 
     (async () => {
-    try {
-        // --- NAME (payload is JSON we wrote: { v, owner, name }) ---
-        const nameReader = bee.makeFeedReader(nameTopic, owner);
+      try {
+        // -------------------------------
+        // NAME feed (JSON in payload)
+        // -------------------------------
+        const nameReader = bee.makeFeedReader(nameTopic, feedOwner);
         const nameUpdate = await nameReader.downloadPayload().catch(() => null);
 
         if (nameUpdate?.payload) {
-        // Bee Bytes -> UTF-8 string
-        const text = nameUpdate.payload.toUtf8();
-        try {
-            const obj = JSON.parse(text) as { v?: number; owner?: string; name?: string };
-            setName(obj?.name ?? null);
-        } catch {
-            // If someone ever wrote a raw string instead of JSON, still show it
+          // Bee Bytes -> UTF-8 string
+          const text = nameUpdate.payload.toUtf8();
+          try {
+            const doc = JSON.parse(text) as NameDoc;
+            setName(doc?.name ?? null);
+          } catch {
+            // Back-compat: if someone ever wrote plain text, render it
             setName(text || null);
-        }
+          }
         } else {
-        setName(null);
+          setName(null);
         }
 
-        // --- AVATAR (payload is JSON we wrote: { v, owner, imageRef }) ---
-        const avatarReader = bee.makeFeedReader(avatarTopic, owner);
+        // -------------------------------
+        // AVATAR feed (JSON in payload)
+        // -------------------------------
+        const avatarReader = bee.makeFeedReader(avatarTopic, feedOwner);
         const avatarUpdate = await avatarReader.downloadPayload().catch(() => null);
 
         if (avatarUpdate?.payload) {
-        const text = avatarUpdate.payload.toUtf8();
-        let ref: string | null = null;
+          const text = avatarUpdate.payload.toUtf8();
+          let ref: string | null = null;
 
-        try {
-            const obj = JSON.parse(text) as { v?: number; owner?: string; imageRef?: string };
-            ref = obj?.imageRef ?? null;
-        } catch {
-            // Back-compat: accept a bare 64-hex written as raw text
+          try {
+            const doc = JSON.parse(text) as AvatarDoc;
+            ref = doc?.imageRef ?? null;
+          } catch {
+            // Back-compat: accept a bare 64-hex image ref written as raw text
             if (/^[0-9a-f]{64}$/i.test(text)) ref = text;
-        }
+          }
 
-        setAvatarRef(ref);
+          setAvatarRef(ref);
         } else {
-        setAvatarRef(null);
+          setAvatarRef(null);
         }
-    } catch (e) {
+      } catch (e) {
         console.error(e);
-    }
+      }
     })();
-  }, [owner, bee]);
+  }, [feedOwner, subject, bee]);
 
   return (
     <div className="flex items-center gap-4">
+      {/* Avatar renders from /bzz/<imageRef>. When no ref yet, show a gray circle placeholder. */}
       {avatarRef ? (
         <Image
           src={`${BEE_URL}/bzz/${avatarRef}`}
@@ -134,8 +119,11 @@ export default function ProfileView({ owner }: { owner: `0x${string}` }) {
       )}
 
       <div>
+        {/* Name from name feed; null → placeholder */}
         <div className="text-lg font-semibold">{name ?? "(no name yet)"}</div>
-        <div className="text-xs text-gray-500 break-all">{owner}</div>
+
+        {/* Show the subject (user) under the name */}
+        <div className="text-xs text-gray-500 break-all">{subject}</div>
       </div>
     </div>
   );

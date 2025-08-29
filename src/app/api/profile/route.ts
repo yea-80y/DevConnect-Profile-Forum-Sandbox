@@ -25,6 +25,10 @@ const FEED_PRIVATE_KEY = process.env.FEED_PRIVATE_KEY!;
  */
 type Kind = "name" | "avatar" | "verify";
 
+// Per-user payloads (we key topics by the user's address = subject)
+type NamePayload   = { name: string;    subject: `0x${string}` };
+type AvatarPayload = { imageRef: string; subject: `0x${string}` };
+
 export async function POST(req: Request) {
   try {
     if (!BEE_URL || !POSTAGE_BATCH_ID || !FEED_PRIVATE_KEY) {
@@ -51,46 +55,64 @@ export async function POST(req: Request) {
     const ownerNo0x = signer.publicKey().address().toHex();       // hex, NO 0x
     const owner0x   = `0x${ownerNo0x}` as `0x${string}`;           // hex, WITH 0x (for returning to UI)
 
-    // Topics for the two profile elements (matches your viewer; topic uses NO-0x)
-    const nameTopic   = Topic.fromString(`devconnect/profile/name/${ownerNo0x}`);
-    const avatarTopic = Topic.fromString(`devconnect/profile/avatar/${ownerNo0x}`);
 
+    // NAME (topic = userNo0x; feed owner = platform signer)
+    // ---------------------------
     if (kind === "name") {
-      /**
-       * NAME: we store JSON { v, owner, name } so the viewer can parse reliably.
-       * We accept any string, trim it, and reject empty.
-       */
-      const name = String(payload?.name ?? "").trim();
-      if (!name) return NextResponse.json({ ok: false, error: "Empty name" }, { status: 400 });
+    const p = payload as NamePayload;
 
-      const writer = bee.makeFeedWriter(nameTopic, signer);
-      await writer.uploadPayload(
-        POSTAGE_BATCH_ID,
-        JSON.stringify({ v: 1, owner: owner0x, name })
-      );
+    // Validate inputs
+    const name = String(p?.name ?? "").trim();
+    if (!name) return NextResponse.json({ ok: false, error: "Empty name" }, { status: 400 });
 
-      // Return WITH 0x so UI can display and re-use it directly.
-      return NextResponse.json({ ok: true, owner: owner0x });
+    const subject = String(p?.subject ?? "").toLowerCase() as `0x${string}`;
+    if (!/^0x[0-9a-f]{40}$/i.test(subject)) {
+        return NextResponse.json({ ok: false, error: "Invalid subject address" }, { status: 400 });
     }
 
-    if (kind === "avatar") {
-      /**
-       * AVATAR: we store JSON { v, owner, imageRef } where imageRef is the 64-hex BZZ reference.
-       * Viewer will render it via `${BEE_URL}/bzz/${imageRef}`.
-       */
-      const imageRef = String(payload?.imageRef ?? "").trim().toLowerCase();
-      if (!/^[0-9a-f]{64}$/i.test(imageRef)) {
-        return NextResponse.json({ ok: false, error: "Invalid imageRef (expect 64-hex)" }, { status: 400 });
-      }
+    // Per-user topic (derived from SUBJECT, not the feed owner)
+    const subjectNo0x = subject.slice(2).toLowerCase();
+    const nameTopic   = Topic.fromString(`devconnect/profile/name/${subjectNo0x}`);
 
-      const writer = bee.makeFeedWriter(avatarTopic, signer);
-      await writer.uploadPayload(
+    // Writer = platform signer (owner), topic = user
+    const writer = bee.makeFeedWriter(nameTopic, signer);
+    await writer.uploadPayload(
         POSTAGE_BATCH_ID,
-        JSON.stringify({ v: 1, owner: owner0x, imageRef })
-      );
+        JSON.stringify({ v: 1, owner: owner0x, subject, name })
+    );
 
-      // Return WITH 0x to keep POST and GET consistent.
-      return NextResponse.json({ ok: true, owner: owner0x });
+    // Return the platform owner (useful for the preview) and echo subject for debugging
+    return NextResponse.json({ ok: true, owner: owner0x, subject });
+    }
+
+    // AVATAR (topic = userNo0x; feed owner = platform signer)
+    // ---------------------------
+    if (kind === "avatar") {
+    const p = payload as AvatarPayload;
+
+    // Validate inputs
+    const imageRef = String(p?.imageRef ?? "").trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/i.test(imageRef)) {
+        return NextResponse.json({ ok: false, error: "Invalid imageRef (expect 64-hex)" }, { status: 400 });
+    }
+
+    const subject = String(p?.subject ?? "").toLowerCase() as `0x${string}`;
+    if (!/^0x[0-9a-f]{40}$/i.test(subject)) {
+        return NextResponse.json({ ok: false, error: "Invalid subject address" }, { status: 400 });
+    }
+
+    // Per-user topic (derived from SUBJECT)
+    const subjectNo0x = subject.slice(2).toLowerCase();
+    const avatarTopic = Topic.fromString(`devconnect/profile/avatar/${subjectNo0x}`);
+
+    // Writer = platform signer (owner), topic = user
+    const writer = bee.makeFeedWriter(avatarTopic, signer);
+    await writer.uploadPayload(
+        POSTAGE_BATCH_ID,
+        JSON.stringify({ v: 1, owner: owner0x, subject, imageRef })
+    );
+
+    return NextResponse.json({ ok: true, owner: owner0x, subject });
     }
 
     if (kind === "verify") {
@@ -168,8 +190,7 @@ export async function GET() {
 
     if (latest?.payload) {
       // Decode payload → JSON → { subject?: string }
-      const bytes = latest.payload as unknown as Uint8Array;
-      const text  = new TextDecoder().decode(bytes);
+      const text = latest.payload.toUtf8();
       const doc   = JSON.parse(text) as { subject?: string };
 
       if (doc.subject && /^0x[0-9a-fA-F]{40}$/.test(doc.subject)) {
