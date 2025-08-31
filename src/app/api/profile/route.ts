@@ -2,7 +2,10 @@ export const runtime = "nodejs";
 
 // app/api/profile/route.ts
 import { NextResponse } from "next/server";
-import { Bee, Topic, PrivateKey } from "@ethersphere/bee-js"; // <-- modern API
+import { Bee, PrivateKey } from "@ethersphere/bee-js"; // <-- modern API
+// shared deterministic topics + shared types
+import { topicName, topicAvatar, topicVerify } from "@/lib/swarm-core/topics";
+import type { NamePayload, AvatarPayload, ApiOk, ApiErr, Hex0x } from "@/lib/swarm-core/types";
 
 /**
  * ENV (server-only)
@@ -25,9 +28,6 @@ const FEED_PRIVATE_KEY = process.env.FEED_PRIVATE_KEY!;
  */
 type Kind = "name" | "avatar" | "verify";
 
-// Per-user payloads (we key topics by the user's address = subject)
-type NamePayload   = { name: string;    subject: `0x${string}` };
-type AvatarPayload = { imageRef: string; subject: `0x${string}` };
 
 export async function POST(req: Request) {
   try {
@@ -52,11 +52,14 @@ export async function POST(req: Request) {
     const signer = new PrivateKey(FEED_PRIVATE_KEY);
 
     // IMPORTANT: get BOTH forms of the address for consistent usage
-    const ownerNo0x = signer.publicKey().address().toHex();       // hex, NO 0x
-    const owner0x   = `0x${ownerNo0x}` as `0x${string}`;           // hex, WITH 0x (for returning to UI)
+    const ownerNo0x = signer.publicKey().address().toHex().toLowerCase(); // hex, NO 0x (lowercased for topics)
+    const owner0x   = `0x${ownerNo0x}` as Hex0x;           // hex, WITH 0x (for returning to UI)
 
 
-    // NAME (topic = userNo0x; feed owner = platform signer)
+    // NAME (topic = userNo0x; feed owner = platform signer) - Deleted
+    // ---------------------------
+    // ---------------------------
+    // NAME (topic = subjectNo0x; feed owner = platform signer)
     // ---------------------------
     if (kind === "name") {
     const p = payload as NamePayload;
@@ -71,21 +74,24 @@ export async function POST(req: Request) {
     }
 
     // Per-user topic (derived from SUBJECT, not the feed owner)
-    const subjectNo0x = subject.slice(2).toLowerCase();
-    const nameTopic   = Topic.fromString(`devconnect/profile/name/${subjectNo0x}`);
+    const t = topicName(subject.slice(2).toLowerCase());
 
-    // Writer = platform signer (owner), topic = user
-    const writer = bee.makeFeedWriter(nameTopic, signer);
-    await writer.uploadPayload(
+    // Writer = platform signer (owner), topic = per-user
+    const w = bee.makeFeedWriter(t, signer);
+    await w.uploadPayload(
         POSTAGE_BATCH_ID,
         JSON.stringify({ v: 1, owner: owner0x, subject, name })
     );
 
-    // Return the platform owner (useful for the preview) and echo subject for debugging
-    return NextResponse.json({ ok: true, owner: owner0x, subject });
+    // Return the platform owner (useful for preview) and echo subject
+    return NextResponse.json({ ok: true, owner: owner0x, subject } as ApiOk);
     }
 
-    // AVATAR (topic = userNo0x; feed owner = platform signer)
+
+    // AVATAR (topic = userNo0x; feed owner = platform signer) - Deleted
+    // ---------------------------
+    // ---------------------------
+    // AVATAR (topic = subjectNo0x; feed owner = platform signer)
     // ---------------------------
     if (kind === "avatar") {
     const p = payload as AvatarPayload;
@@ -102,18 +108,18 @@ export async function POST(req: Request) {
     }
 
     // Per-user topic (derived from SUBJECT)
-    const subjectNo0x = subject.slice(2).toLowerCase();
-    const avatarTopic = Topic.fromString(`devconnect/profile/avatar/${subjectNo0x}`);
+    const t = topicAvatar(subject.slice(2).toLowerCase());
 
-    // Writer = platform signer (owner), topic = user
-    const writer = bee.makeFeedWriter(avatarTopic, signer);
-    await writer.uploadPayload(
+    // Writer = platform signer (owner), topic = per-user
+    const w = bee.makeFeedWriter(t, signer);
+    await w.uploadPayload(
         POSTAGE_BATCH_ID,
         JSON.stringify({ v: 1, owner: owner0x, subject, imageRef })
     );
 
-    return NextResponse.json({ ok: true, owner: owner0x, subject });
+    return NextResponse.json({ ok: true, owner: owner0x, subject } as ApiOk);
     }
+
 
     if (kind === "verify") {
       /**
@@ -141,8 +147,8 @@ export async function POST(req: Request) {
       // and ensure the recovered address matches `subject`. If mismatch => 400.
 
       // If valid, store a verification record under a dedicated feed:
-      const verifyTopic = Topic.fromString(`devconnect/profile/verify/${ownerNo0x}`);
-      const writer = bee.makeFeedWriter(verifyTopic, signer);
+      const t = topicVerify(ownerNo0x);
+      const writer = bee.makeFeedWriter(t, signer);
       const doc = {
         v: 1,
         owner: owner0x,   // platform feed owner (WITH 0x for clarity in stored doc)
@@ -153,7 +159,7 @@ export async function POST(req: Request) {
       };
       await writer.uploadPayload(POSTAGE_BATCH_ID, JSON.stringify(doc));
 
-      return NextResponse.json({ ok: true, owner: owner0x });
+      return NextResponse.json({ ok: true, owner: owner0x } as ApiOk);
     }
 
     return NextResponse.json({ ok: false, error: "Unknown kind" }, { status: 400 });
@@ -184,17 +190,17 @@ export async function GET() {
   // Try to derive the generated user from the latest verify feed payload
   let user: `0x${string}` | undefined;
   try {
-    const verifyTopic = Topic.fromString(`devconnect/profile/verify/${ownerNo0x}`);
-    const reader      = bee.makeFeedReader(verifyTopic, ownerAddr); // pass EthAddress for clarity
-    const latest      = await reader.downloadPayload();             // payload written by POST "verify"
+    const t        = topicVerify(ownerNo0x);
+    const reader   = bee.makeFeedReader(t, ownerAddr);
+    const latest   = await reader.downloadPayload();             // payload written by POST "verify"
 
     if (latest?.payload) {
       // Decode payload → JSON → { subject?: string }
       const text = latest.payload.toUtf8();
-      const doc   = JSON.parse(text) as { subject?: string };
+      const doc   = JSON.parse(text) as { subject?: Hex0x };
 
       if (doc.subject && /^0x[0-9a-fA-F]{40}$/.test(doc.subject)) {
-        user = doc.subject as `0x${string}`;
+        user = doc.subject;
       }
     }
   } catch {

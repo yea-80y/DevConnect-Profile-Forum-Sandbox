@@ -34,13 +34,15 @@ import ProfileView from "./ProfileView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Wallet } from "ethers"; // ethers v6 (for deriving subject address)
+import { FEED_NS } from "@/lib/swarm-core/topics";
+
 
 /* ----------------------------- Types (client) ----------------------------- */
 
 type Hex0x = `0x${string}`;
 
 /** Server responses (we only need the platform owner's 0x address here) */
-interface ApiOk { ok: true; owner: Hex0x }
+interface ApiOk { ok: true; owner: Hex0x; subject?: Hex0x }
 interface ApiErr { ok: false; error: string }
 type ApiResponse = ApiOk | ApiErr;
 
@@ -70,6 +72,13 @@ export default function ProfileTab() {
   const [displayName, setDisplayName] = useState("");
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+  // Clean up object URLs to avoid memory leaks (runs on unmount and before previewUrl changes)
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
 
   // UI state
   const [busy, setBusy] = useState(false);
@@ -121,7 +130,7 @@ export default function ProfileTab() {
 
         // DEBUG: feed GET for the name (topic derived from SUBJECT, not owner)
         const subjectNo0x = subject0x.slice(2).toLowerCase();
-        const topicStr = `devconnect/profile/name/${subjectNo0x}`;
+        const topicStr = `${FEED_NS}/name/${subjectNo0x}`;
         const topicHex = Topic.fromString(topicStr).toString();
         console.log("[profile] name saved via platform signer", {
           feedOwner0x: owner,
@@ -148,7 +157,7 @@ export default function ProfileTab() {
 
         // DEBUG: feed GET for the avatar (topic derived from SUBJECT)
         const subjectNo0x = subject0x.slice(2).toLowerCase();
-        const topicStr = `devconnect/profile/avatar/${subjectNo0x}`;
+        const topicStr = `${FEED_NS}/avatar/${subjectNo0x}`;
         const topicHex = Topic.fromString(topicStr).toString();
         console.log("[profile] avatar feed updated via platform signer", {
           feedOwner0x: owner,
