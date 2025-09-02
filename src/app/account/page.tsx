@@ -1,125 +1,273 @@
 "use client";
 
 /**
- * Home
- * ----
- * - We show the user's profile if we know two things:
- *    1) feedOwner  → returned by /api/profile (platform signer address)
- *    2) subject    → user's address (read from localStorage; fall back to deriving from PK if needed)
- * - We DO NOT load any signer here. We only:
- *    - read localStorage for the test account you created on /account
- *    - fetch /api/profile ONCE (and only after we have a subject) to get the feed owner
+ * Accounts
+ * --------
+ * Purpose:
+ * - Create/import/select a *user* wallet (the "subject").
+ * - Persist the ACTIVE private key in localStorage under "woco.active_pk".
+ * - Provide safe download actions:
+ *     • Download Private Key (.txt)        — raw 0x (sensitive).
+ *     • Download Keystore (V3 JSON, UTC)   — password-encrypted (recommended).
+ *
+ * This page is purely local (no server/Bee calls). Other screens read the active key.
  */
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import ProfileView from "@/app/profile/ProfileView";
+import { Wallet } from "ethers"; // ethers v6
 
-type ApiOk = { ok: true; owner: `0x${string}`; user?: `0x${string}` };
-type ApiErr = { ok: false; error: string };
+type Hex0x = `0x${string}`;
 
-// Prefer reading the address directly if you've stored it (lightweight: no ethers import).
-function getActiveAddressFromStorage(): `0x${string}` | null {
-  const addr = localStorage.getItem("woco.active_addr") as `0x${string}` | null;
-  if (addr && /^0x[0-9a-fA-F]{40}$/.test(addr)) return addr;
-  return null;
-}
+type StoredAccount = {
+  id: string;      // local id
+  label: string;   // friendly name
+  pk: Hex0x;       // private key (0x-prefixed)
+  address: Hex0x;  // derived 0x address (subject)
+};
 
-// Fallback: derive address from the stored private key (only if needed).
-async function deriveAddressFromPkIfNeeded(): Promise<`0x${string}` | null> {
-  const pk = localStorage.getItem("woco.active_pk") as `0x${string}` | null;
-  if (!pk) return null;
+const ACCOUNTS_KEY = "woco.accounts";
+const ACTIVE_PK_KEY = "woco.active_pk";
+
+/* ------------------------- localStorage helpers ------------------------- */
+
+function loadAccounts(): StoredAccount[] {
   try {
-    // dynamic import keeps the initial JS lighter if we already had the address stored
-    const { Wallet } = await import("ethers");
-    return new Wallet(pk).address as `0x${string}`;
+    const raw = localStorage.getItem(ACCOUNTS_KEY);
+    return raw ? (JSON.parse(raw) as StoredAccount[]) : [];
   } catch {
-    return null;
+    return [];
   }
 }
+function saveAccounts(list: StoredAccount[]) {
+  localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(list));
+}
 
-export default function Home() {
-  const [feedOwner, setFeedOwner] = useState<`0x${string}` | null>(null); // platform signer address
-  const [subject, setSubject] = useState<`0x${string}` | null>(null);     // user address
-  const [error, setError] = useState<string | null>(null);
+/* ----------------------------- file helpers ----------------------------- */
 
+/** Trigger a client-side download of given text content. */
+function downloadTextFile(filename: string, text: string, mime = "text/plain") {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/** Build a UTC-style filename used by common keystore exporters. */
+function utcFilenameFor(address0x: string, d = new Date()) {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const yyyy = d.getUTCFullYear();
+  const MM = pad(d.getUTCMonth() + 1);
+  const dd = pad(d.getUTCDate());
+  const hh = pad(d.getUTCHours());
+  const mm = pad(d.getUTCMinutes());
+  const ss = pad(d.getUTCSeconds());
+  const iso = `${yyyy}-${MM}-${dd}T${hh}-${mm}-${ss}.000Z`;
+  const addrNo0x = address0x.slice(2).toLowerCase();
+  return `UTC--${iso}--${addrNo0x}.json`;
+}
+
+/* --------------------------------- UI ---------------------------------- */
+
+export default function Page() {
+  const [accounts, setAccounts] = useState<StoredAccount[]>([]);
+  const [activePk, setActivePk] = useState<Hex0x | null>(null);
+  const [label, setLabel] = useState("");
+
+  // Load saved accounts + current active pk (if any)
   useEffect(() => {
-    (async () => {
-      // 1) Get subject (user) *without* heavy libs when possible
-      const addr = getActiveAddressFromStorage() ?? (await deriveAddressFromPkIfNeeded());
-      if (!addr) {
-        setError("No active account. Go to Accounts to create/import one.");
-        return;
-      }
-      setSubject(addr);
+    const list = loadAccounts();
+    setAccounts(list);
 
-      // 2) Only now fetch the platform feed owner (one light GET)
-      try {
-        const res = await fetch("/api/profile");
-        const d: ApiOk | ApiErr = await res.json();
-        if ("ok" in d && d.ok && d.owner) {
-          setFeedOwner(d.owner);
-        } else {
-          setError((d as ApiErr).error || "Unable to fetch platform owner");
-        }
-      } catch (e) {
-        setError(String(e));
-      }
-    })();
+    const pk = (localStorage.getItem(ACTIVE_PK_KEY) ||
+      localStorage.getItem("demo_user_pk")) as Hex0x | null; // legacy fallback
+    if (pk) setActivePk(pk);
   }, []);
 
+  /** Set the active account for the app (subject used elsewhere) */
+  function setActive(pk: Hex0x) {
+    localStorage.setItem(ACTIVE_PK_KEY, pk);
+    setActivePk(pk);
+    window.dispatchEvent(new Event("account:changed"));
+  }
+
+  /** Generate a brand-new wallet and make it active */
+  function generateNew() {
+    const w = Wallet.createRandom();
+    const entry: StoredAccount = {
+      id: String(Date.now()),
+      label: label || `Account ${accounts.length + 1}`,
+      pk: w.privateKey as Hex0x,
+      address: w.address as Hex0x,
+    };
+    const next = [...accounts, entry];
+    setAccounts(next);
+    saveAccounts(next);
+    setLabel("");
+    setActive(entry.pk);
+  }
+
+  /** Import a private key (0x… or raw hex) and make it active */
+  function importPk(raw: string) {
+    let pk = raw.trim();
+    if (!pk) return;
+    if (!pk.startsWith("0x")) pk = `0x${pk}`;
+    try {
+      const w = new Wallet(pk as Hex0x);
+      const entry: StoredAccount = {
+        id: String(Date.now()),
+        label: label || `Imported ${w.address.slice(0, 10)}…`,
+        pk: pk as Hex0x,
+        address: w.address as Hex0x,
+      };
+      const next = [...accounts, entry];
+      setAccounts(next);
+      saveAccounts(next);
+      setLabel("");
+      setActive(entry.pk);
+    } catch (e) {
+      alert(`Invalid private key: ${String(e)}`);
+    }
+  }
+
+  /** Delete from list (clears active if you deleted the active one) */
+  function remove(id: string) {
+    const next = accounts.filter((a) => a.id !== id);
+    setAccounts(next);
+    saveAccounts(next);
+    if (activePk && !next.some((a) => a.pk === activePk)) {
+      localStorage.removeItem(ACTIVE_PK_KEY);
+      setActivePk(null);
+      window.dispatchEvent(new Event("account:changed"));
+    }
+  }
+
+  /** Download raw private key text with prominent warnings. */
+  function downloadPkTxt(a: StoredAccount) {
+    const contents =
+`# WARNING: PRIVATE KEY (UNENCRYPTED)
+# Anyone with this key can control your funds and identity.
+# Store offline and never share. Consider using the encrypted keystore instead.
+
+Address: ${a.address}
+PrivateKey: ${a.pk}
+`;
+    const filename = `devconnect-account-${a.address.slice(2, 10)}.txt`;
+    downloadTextFile(filename, contents, "text/plain");
+  }
+
+  /** Download password-encrypted V3 keystore JSON (recommended). */
+  async function downloadKeystore(a: StoredAccount) {
+    const password = prompt(
+      "Enter a password for the keystore JSON (min 1 character). DO NOT FORGET THIS PASSWORD."
+    );
+    if (password == null) return; // cancelled
+    if (password.length < 1) {
+      alert("Password too short.");
+      return;
+    }
+    try {
+      const w = new Wallet(a.pk);
+      // ethers v6: AES-128-CTR + scrypt by default
+      const json = await w.encrypt(password);
+      const filename = utcFilenameFor(a.address);
+      downloadTextFile(filename, json, "application/json");
+    } catch (e) {
+      alert(`Failed to create keystore: ${String(e)}`);
+    }
+  }
+
   return (
-    <main className="min-h-dvh bg-neutral-50 pb-20">
+    <main className="min-h-dvh bg-neutral-50">
       <header className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b">
         <div className="mx-auto max-w-3xl px-4 h-14 flex items-center justify-between">
-          <span className="font-semibold">Devconnect</span>
+          <span className="font-semibold">Accounts</span>
           <div className="flex items-center gap-4">
-            <Link href="/account" className="text-sm underline">Accounts</Link>
+            <Link href="/" className="text-sm underline">Home</Link>
             <Link href="/profile" className="text-sm underline">Edit profile</Link>
           </div>
         </div>
       </header>
 
       <div className="mx-auto max-w-3xl px-4 py-4 space-y-6">
+        {/* Create / Import */}
+        <section className="rounded-xl bg-white border shadow-sm p-4 space-y-2">
+          <div className="text-sm font-semibold">Create / Import account</div>
+          <input
+            className="w-full border rounded px-2 py-1 text-sm"
+            placeholder="Label (optional)"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+          />
+        <div className="flex gap-2">
+            <button
+              className="px-3 py-1.5 text-sm rounded border bg-black text-white"
+              onClick={generateNew}
+              type="button"
+            >
+              Generate new
+            </button>
+            <button
+              className="px-3 py-1.5 text-sm rounded border bg-white"
+              onClick={() => {
+                const raw = prompt("Paste private key (0x… or hex):") || "";
+                importPk(raw);
+              }}
+              type="button"
+            >
+              Import private key
+            </button>
+          </div>
+          <p className="text-xs text-amber-700">
+            Tip: after creating/importing, use the buttons in the table to set the active account and download backups.
+          </p>
+        </section>
+
+        {/* Saved accounts */}
         <section className="rounded-xl bg-white border shadow-sm p-4">
-          <div className="mb-3 text-sm font-semibold">My Profile</div>
-
-          {feedOwner && subject ? (
-            // IMPORTANT: we pass both feedOwner (platform) and subject (user)
-            <ProfileView feedOwner={feedOwner} subject={subject} />
-          ) : (
-            <div className="text-sm text-gray-500">
-              {error ?? "Loading…"}
-            </div>
-          )}
-
-          {feedOwner && (
-            <p className="mt-2 text-xs text-gray-500 break-all">
-              Feed owner (platform): <code>{feedOwner}</code><br />
-              Subject (user): <code>{subject ?? "(none)"}</code>
-            </p>
-          )}
+          <div className="text-sm font-semibold mb-2">Saved accounts</div>
+          <div className="space-y-2">
+            {accounts.map((a) => (
+              <div key={a.id} className="border rounded p-2 text-xs bg-white">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <div><span className="font-medium">{a.label}</span></div>
+                    <div>Address:&nbsp;<code className="break-all">{a.address}</code></div>
+                    <div>Private key:&nbsp;<code className="break-all">{a.pk}</code></div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button className="px-2 py-1 rounded border bg-white" onClick={() => setActive(a.pk)}>
+                      {activePk === a.pk ? "Active ✓" : "Set active"}
+                    </button>
+                    <button className="px-2 py-1 rounded border bg-white" onClick={() => downloadPkTxt(a)}>
+                      Download PK (.txt)
+                    </button>
+                    <button className="px-2 py-1 rounded border bg-white" onClick={() => downloadKeystore(a)}>
+                      Download keystore (JSON)
+                    </button>
+                    <button className="px-2 py-1 rounded border bg-white" onClick={() => remove(a.id)}>
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {!accounts.length && <div className="text-xs text-gray-500">No accounts yet.</div>}
+          </div>
+          <div className="text-xs text-gray-600 mt-2">
+            Active private key:&nbsp;<code>{activePk ?? "(none)"}</code>
+          </div>
         </section>
 
-        {/* rest of your tiles */}
-        <section className="grid grid-cols-2 gap-3">
-          <Link href="/programme" className="rounded-xl bg-white border shadow-sm p-4">
-            <div className="text-sm font-medium">Programme</div>
-            <div className="text-xs text-gray-500">Browse sessions & schedule</div>
-          </Link>
-          <Link href="/map" className="rounded-xl bg-white border shadow-sm p-4">
-            <div className="text-sm font-medium">Map</div>
-            <div className="text-xs text-gray-500">Find venues & rooms</div>
-          </Link>
-          <Link href="/quests" className="rounded-xl bg-white border shadow_sm p-4">
-            <div className="text-sm font-medium">Quests</div>
-            <div className="text-xs text-gray-500">Play & earn rewards</div>
-          </Link>
-          <Link href="/profile" className="rounded-xl bg-white border shadow_sm p-4">
-            <div className="text-sm font-medium">Settings</div>
-            <div className="text-xs text-gray-500">Update your profile</div>
-          </Link>
-        </section>
+        {/* Security reminder */}
+        <p className="text-xs text-gray-500">
+          Security: keep your private key/keystore offline and backed up. Anyone with access can control this account.
+        </p>
       </div>
     </main>
   );

@@ -62,6 +62,16 @@ export default function Home() {
     }
   }, []);
 
+  // Preload a cached owner so we don't show "(loading…)" every time
+  useEffect(() => {
+    try {
+      const cached = localStorage.getItem("woco.owner0x") as `0x${string}` | null;
+      if (cached && cached.startsWith("0x")) setPlatformOwner(cached);
+    } catch {
+      /* ignore cache read errors */
+    }
+  }, []);
+
   /**
    * 2) Ask the server who the platform signer is (feed owner).
    *    We don’t depend on 'user' here; Home shows the SUBJECT we have locally.
@@ -73,12 +83,29 @@ export default function Home() {
         if ("ok" in d && d.ok && d.owner) {
           // d.owner = platform signer 0x... (feed owner)
           setPlatformOwner(d.owner);
+          try { localStorage.setItem("woco.owner0x", d.owner); } catch {}
           console.log("[profile] /api/profile owner:", d.owner, "user:", (d as ApiOk).user);
         } else {
           setError((d as ApiErr).error || "No platform owner returned");
         }
       })
       .catch((e) => setError(String(e)));
+  }, []);
+
+  // React to "account:changed" without a page reload
+  useEffect(() => {
+    const onAcct = () => {
+      try {
+        const pk =
+          (localStorage.getItem("woco.active_pk") ||
+          localStorage.getItem("demo_user_pk")) as `0x${string}` | null;
+        if (!pk) { setUserAddress(null); return; }
+        const w = new Wallet(pk);
+        setUserAddress(w.address as `0x${string}`);
+      } catch { /* ignore */ }
+    };
+    window.addEventListener("account:changed", onAcct);
+    return () => window.removeEventListener("account:changed", onAcct);
   }, []);
 
   return (

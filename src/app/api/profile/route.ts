@@ -5,7 +5,7 @@ import { NextResponse } from "next/server";
 import { Bee, PrivateKey } from "@ethersphere/bee-js"; // <-- modern API
 // shared deterministic topics + shared types
 import { topicName, topicAvatar, topicVerify } from "@/lib/swarm-core/topics";
-import type { NamePayload, AvatarPayload, ApiOk, ApiErr, Hex0x } from "@/lib/swarm-core/types";
+import type { NamePayload, AvatarPayload, ApiOk, Hex0x } from "@/lib/swarm-core/types";
 
 /**
  * ENV (server-only)

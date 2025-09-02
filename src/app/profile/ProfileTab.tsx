@@ -19,11 +19,7 @@
  *      - If avatar present:
  *          a) Upload the image to /bzz → get immutable 64-hex reference
  *          b) POST /api/profile { kind: "avatar", payload: { imageRef, subject } }
- *  4) Preview reads the profile using <ProfileView feedOwner={platformSigner} subject={user}>
- *
- * Notes:
- * - Name is stored as JSON inside the feed payload (mutable). No BZZ hash by design.
- * - Avatar is immutable → uploaded to /bzz; we store its 64-hex ref in the avatar feed JSON.
+ *  4) Immediately update UI **in-state** (applyLocalUpdate) so no extra reads are needed.
  */
 
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
@@ -35,61 +31,67 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Wallet } from "ethers"; // ethers v6 (for deriving subject address)
 import { FEED_NS } from "@/lib/swarm-core/topics";
-
+import { useProfile } from "@/lib/profile/context";
 
 /* ----------------------------- Types (client) ----------------------------- */
 
-type Hex0x = `0x${string}`;
+type Hex0x = `0x${string}`
 
-/** Server responses (we only need the platform owner's 0x address here) */
-interface ApiOk { ok: true; owner: Hex0x; subject?: Hex0x }
-interface ApiErr { ok: false; error: string }
-type ApiResponse = ApiOk | ApiErr;
+/* ------------------------ LocalStorage keys (client) ---------------------- */
 
-/** Request shapes now include the per-user subject (0x…) */
-interface NamePayload   { name: string;    subject: Hex0x }
-interface AvatarPayload { imageRef: string; subject: Hex0x }
-type RequestBody =
-  | { kind: "name";   payload: NamePayload }
-  | { kind: "avatar"; payload: AvatarPayload };
+const ACTIVE_PK_KEY = "woco.active_pk"; // new key we use in this demo
+const LEGACY_PK_KEY = "demo_user_pk";   // fallback if present in your older flow
 
-/** Helper to post profile writes to the server (platform signer will stamp them) */
-async function postProfile(body: RequestBody): Promise<ApiOk> {
-  const res = await fetch("/api/profile", {
+/* -------------------------------- API helper ------------------------------ */
+
+async function postProfile(body: unknown): Promise<{ ok: true; owner: Hex0x } | never> {
+  const r = await fetch("/api/profile", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  const json = (await res.json()) as ApiResponse;
-  if (!json.ok) throw new Error(json.error || "Request failed");
-  return json;
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    throw new Error(text || `POST /api/profile failed: ${r.status}`);
+  }
+  const j = (await r.json()) as { ok: boolean; owner?: string };
+  if (!j.ok || !j.owner || !j.owner.startsWith("0x")) {
+    throw new Error("Server did not return a valid owner address");
+  }
+  return { ok: true, owner: j.owner as Hex0x };
 }
+
+/* --------------------------------- Component ------------------------------ */
 
 export default function ProfileTab() {
   const bee = useMemo(() => new Bee(BEE_URL), []);
+  const { applyLocalUpdate } = useProfile(); // <— in-state UI update after successful saves
 
   // Form state
   const [displayName, setDisplayName] = useState("");
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
-  // Clean up object URLs to avoid memory leaks (runs on unmount and before previewUrl changes)
-  useEffect(() => {
-    return () => {
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
-    };
-  }, [previewUrl]);
-
   // UI state
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  const [version, setVersion] = useState(0);
 
   // Platform signer’s feed owner (WITH 0x, returned by the server after each POST)
   const [owner0x, setOwner0x] = useState<Hex0x | null>(null);
 
   // Active user account (subject) loaded from localStorage (created on the Account/Home screens)
   const [subject0x, setSubject0x] = useState<Hex0x | null>(null);
+
+  // Preload cached platform owner (so the read panel can render immediately)
+  useEffect(() => {
+    try {
+      const cached = localStorage.getItem("woco.owner0x") as Hex0x | null;
+      if (cached && cached.startsWith("0x")) setOwner0x(cached);
+    } catch { /* ignore */ }
+  }, []);
 
   /**
    * Load the active user private key from localStorage and derive address (subject).
@@ -100,17 +102,56 @@ export default function ProfileTab() {
   useEffect(() => {
     try {
       const pk =
-        (typeof window !== "undefined" && (localStorage.getItem("woco.active_pk") || localStorage.getItem("demo_user_pk"))) as Hex0x | null;
-      if (pk) {
-        const addr = new Wallet(pk).address as Hex0x;
-        setSubject0x(addr);
-      } else {
-        setErr("No active account. Create or select one on the Accounts/Home screen first.");
+        (typeof window !== "undefined" &&
+          (localStorage.getItem(ACTIVE_PK_KEY) || localStorage.getItem(LEGACY_PK_KEY))) as `0x${string}` | null;
+
+      if (!pk) {
+        setSubject0x(null);
+        return;
       }
-    } catch (e) {
-      setErr(`Failed to load active account: ${String(e)}`);
+
+      // Derive 0x address from private key (ethers v6)
+      const w = new Wallet(pk);
+      const addr = w.address as Hex0x;
+      setSubject0x(addr);
+    } catch {
+      setSubject0x(null);
     }
   }, []);
+
+  // React to account switches without a reload
+  useEffect(() => {
+    const onAcct = () => {
+      try {
+        const pk =
+          (localStorage.getItem("woco.active_pk") ||
+          localStorage.getItem("demo_user_pk")) as `0x${string}` | null;
+        if (!pk) { setSubject0x(null); return; }
+        const w = new Wallet(pk);
+        setSubject0x(w.address as Hex0x);
+      } catch { /* ignore */ }
+    };
+    window.addEventListener("account:changed", onAcct);
+    return () => window.removeEventListener("account:changed", onAcct);
+  }, []);
+
+  // ⬇️ ADD THIS EFFECT (forces the read panel to remount after a save)
+  useEffect(() => {
+    const onUpdated = () => setVersion((v) => v + 1);
+    window.addEventListener("profile:updated", onUpdated);
+    return () => window.removeEventListener("profile:updated", onUpdated);
+  }, []);
+
+  // Avatar preview when user picks a file
+  function onPickFile(e: ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0] ?? null;
+    if (!f) {
+      setPreviewUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(f);
+    setPreviewUrl(url);
+  }
 
   async function onSave(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -128,7 +169,18 @@ export default function ProfileTab() {
         const { owner } = await postProfile({ kind: "name", payload: { name: nameToSave, subject: subject0x } });
         setOwner0x(owner);
 
-        // DEBUG: feed GET for the name (topic derived from SUBJECT, not owner)
+        // Update in-state profile immediately (no extra network read)
+        applyLocalUpdate({ name: nameToSave });
+        // Cache for instant reads on other screens
+        try {
+          const key = `woco.profile.${subject0x.toLowerCase()}`;
+          const prev = JSON.parse(localStorage.getItem(key) || "{}");
+          localStorage.setItem(key, JSON.stringify({ ...prev, name: nameToSave, updatedAt: Date.now() }));
+        } catch { /* ignore */ }
+
+        window.dispatchEvent(new Event("profile:updated")); 
+
+        // DEBUG: feed GET for the name (topic derived from SUBJECT)
         const subjectNo0x = subject0x.slice(2).toLowerCase();
         const topicStr = `${FEED_NS}/name/${subjectNo0x}`;
         const topicHex = Topic.fromString(topicStr).toString();
@@ -141,7 +193,7 @@ export default function ProfileTab() {
         });
       }
 
-      // (2) Upload avatar → immutable BZZ ref → save avatar feed for SUBJECT
+      // (2) Upload avatar (if chosen) → immutable BZZ ref → save avatar feed for SUBJECT
       const file = fileRef.current?.files?.[0] ?? null;
       if (file) {
         const uploadRes = await bee.uploadFile(POSTAGE_BATCH_ID, file, file.name);
@@ -154,6 +206,17 @@ export default function ProfileTab() {
 
         const { owner } = await postProfile({ kind: "avatar", payload: { imageRef: imageRefHex, subject: subject0x } });
         setOwner0x(owner);
+
+        // Update in-state profile immediately (no extra network read)
+        applyLocalUpdate({ avatarRef: imageRefHex });
+        // Cache for instant reads on other screens
+        try {
+          const key = `woco.profile.${subject0x.toLowerCase()}`;
+          const prev = JSON.parse(localStorage.getItem(key) || "{}");
+          localStorage.setItem(key, JSON.stringify({ ...prev, avatarRef: imageRefHex, updatedAt: Date.now() }));
+        } catch { /* ignore */ }
+
+        window.dispatchEvent(new Event("profile:updated"));
 
         // DEBUG: feed GET for the avatar (topic derived from SUBJECT)
         const subjectNo0x = subject0x.slice(2).toLowerCase();
@@ -201,57 +264,39 @@ export default function ProfileTab() {
               ref={fileRef}
               type="file"
               accept="image/*"
-              onChange={(ev: ChangeEvent<HTMLInputElement>) => {
-                const f = ev.target.files?.[0] ?? null;
-                if (previewUrl) URL.revokeObjectURL(previewUrl);
-                setPreviewUrl(f ? URL.createObjectURL(f) : null);
-              }}
+              onChange={onPickFile}
+              className="block w-full text-sm"
             />
-
-            <div className="flex items-center gap-3">
-              {previewUrl ? (
+            {previewUrl && (
+              <div className="flex items-center gap-3">
                 <Image
                   src={previewUrl}
-                  alt="avatar preview"
+                  alt="preview"
                   width={64}
                   height={64}
-                  unoptimized
                   className="w-16 h-16 rounded-full object-cover border"
                 />
-              ) : (
-                <div className="w-16 h-16 rounded-full bg-gray-200 border" />
-              )}
-            </div>
+                <div className="text-xs text-gray-500">Preview</div>
+              </div>
+            )}
           </div>
 
-          {/* Save */}
-          <Button type="submit" disabled={busy}>
-            {busy ? "Saving…" : "Save to Swarm"}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button type="submit" disabled={busy}>
+              {busy ? "Saving…" : "Save"}
+            </Button>
 
-          {/* Status */}
-          {err && <p className="text-sm text-red-600">{err}</p>}
-          {saved && <p className="text-sm text-green-700">Saved ✓</p>}
-
-          {/* Debug */}
-          {owner0x && (
-            <p className="text-xs text-gray-500 break-all mt-2">
-              Platform feed owner (0x): {owner0x}
-            </p>
-          )}
-          {subject0x && (
-            <p className="text-xs text-gray-500 break-all">
-              Subject (user) address (0x): {subject0x}
-            </p>
-          )}
+            {saved && <span className="text-green-600 text-sm">Saved ✔</span>}
+            {err && <span className="text-red-600 text-sm">Error: {err}</span>}
+          </div>
         </form>
       </div>
 
-      {/* Preview panel: platform-owned feed, per-user topics */}
+      {/* Read panel (renders from in-state; zero network calls here) */}
       <div className="rounded border p-4 bg-white/80">
-        <div className="font-semibold mb-2">Preview</div>
+        <div className="font-semibold mb-2">Current Profile (in-state)</div>
         {owner0x && subject0x ? (
-          <ProfileView feedOwner={owner0x} subject={subject0x} />
+          <ProfileView key={`${subject0x}|${version}`} subject={subject0x} feedOwner={owner0x} />
         ) : (
           <p className="text-sm text-gray-500">
             Save first (needs platform feed owner and an active user account).
