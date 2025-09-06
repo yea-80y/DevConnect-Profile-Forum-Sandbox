@@ -3,17 +3,12 @@
 
 /**
  * ProfileView (presentational, state-driven)
- * -----------------------------------------
- * • Makes ZERO network calls.
- * • Renders from the central ProfileProvider (which:
- *     - hydrates from localStorage
- *     - does ONE cold-start freshness check
- *     - does an optional, rate-limited visibility check
- *     - only updates React state if content actually changed)
- * • After saves, ProfileTab calls applyLocalUpdate(...) so UI updates instantly.
+ * - Renders from ProfileProvider (fast), but triggers a one-time
+ *   ensureFresh() on mount to sync with Swarm automatically.
  */
 
 import Image from "next/image";
+import { useEffect, useRef } from "react";
 import { useProfile } from "@/lib/profile/context";
 import { BEE_URL } from "@/config/swarm";
 
@@ -24,17 +19,42 @@ export default function ProfileView(props: {
   feedOwner?: Hex0x | null; // optional, for display only
 }) {
   const { subject, feedOwner } = props;
-  const { profile } = useProfile();
+  const { profile, ensureFresh } = useProfile();
+
+  const did = useRef(false);
+  const ensureFreshRef = useRef(ensureFresh);
+  useEffect(() => { ensureFreshRef.current = ensureFresh; }, [ensureFresh]);
+
+  // snapshot whether we had a local update at the moment of mount
+  const avatarMarkerAtMount = useRef(profile?.avatarMarker);
+
+  // one-time mount effect (empty deps; lint-clean)
+  useEffect(() => {
+    if (did.current) return;
+    did.current = true;
+
+    // if we just saved locally, don’t immediately fetch and overwrite
+    if (!avatarMarkerAtMount.current) {
+      const t = setTimeout(() => { void ensureFreshRef.current(); }, 400);
+      return () => clearTimeout(t);
+    }
+  }, []);
 
   const name = profile?.name ?? null;
   const avatarRef = profile?.avatarRef ?? null;
 
+  console.log("[ProfileView] avatarRef in state =", profile?.avatarRef)
+
+
   return (
     <div className="flex items-center gap-4">
-      {/* Avatar (/bzz/{ref} immutable by content hash) */}
+      {/* Avatar (/bzz/{ref} immutable). Add ?v=avatarMarker to nudge caches after updates */}
       {avatarRef ? (
         <Image
-          src={`${BEE_URL}/bzz/${avatarRef}`}
+          key={`${avatarRef}-${profile?.avatarMarker ?? "0"}`}
+          src={`${BEE_URL}/bzz/${avatarRef}${
+            profile?.avatarMarker ? `?v=${profile.avatarMarker}` : ""
+          }`}
           alt="avatar"
           width={80}
           height={80}

@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 // app/api/profile/route.ts
@@ -6,17 +7,7 @@ import { Bee, PrivateKey } from "@ethersphere/bee-js"; // <-- modern API
 // shared deterministic topics + shared types
 import { topicName, topicAvatar, topicVerify } from "@/lib/swarm-core/topics";
 import type { NamePayload, AvatarPayload, ApiOk, Hex0x } from "@/lib/swarm-core/types";
-
-/**
- * ENV (server-only)
- * -----------------
- * BEE_URL=http://bee.swarm.public.dappnode:1633
- * POSTAGE_BATCH_ID=0x...          // valid stamp
- * FEED_PRIVATE_KEY=0x...32bytes   // DO NOT commit
- */
-const BEE_URL = process.env.BEE_URL!;
-const POSTAGE_BATCH_ID = process.env.POSTAGE_BATCH_ID!;
-const FEED_PRIVATE_KEY = process.env.FEED_PRIVATE_KEY!;
+import { BEE_URL, POSTAGE_BATCH_ID, FEED_PRIVATE_KEY, normalizePk } from "@/config/swarm"
 
 
 /**
@@ -49,7 +40,7 @@ export async function POST(req: Request) {
 
     // --- Construct bee + platform signer (platform/private feed owner) ---
     const bee = new Bee(BEE_URL);
-    const signer = new PrivateKey(FEED_PRIVATE_KEY);
+    const signer = new PrivateKey(normalizePk(FEED_PRIVATE_KEY));
 
     // IMPORTANT: get BOTH forms of the address for consistent usage
     const ownerNo0x = signer.publicKey().address().toHex().toLowerCase(); // hex, NO 0x (lowercased for topics)
@@ -182,7 +173,7 @@ export async function GET() {
 
   // Construct Bee client and platform signer (feed owner)
   const bee = new Bee(BEE_URL);
-  const signer     = new PrivateKey(FEED_PRIVATE_KEY);
+  const signer = new PrivateKey(normalizePk(FEED_PRIVATE_KEY));
   const ownerAddr  = signer.publicKey().address();         // EthAddress object
   const ownerNo0x  = ownerAddr.toHex().toLowerCase();      // hex w/o 0x for topic strings
   const owner0x    = `0x${ownerNo0x}` as `0x${string}`;     // hex with 0x for UI/API

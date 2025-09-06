@@ -116,6 +116,7 @@ export default function Home() {
           <div className="flex items-center gap-4">
             <Link href="/account" className="text-sm underline">Accounts</Link>
             <Link href="/profile" className="text-sm underline">Edit profile</Link>
+            <Link href="/forum"   className="text-sm underline">Forum</Link>
           </div>
         </div>
       </header>
@@ -167,14 +168,17 @@ export default function Home() {
             <div className="text-sm font-medium">Programme</div>
             <div className="text-xs text-gray-500">Browse sessions & schedule</div>
           </Link>
+
           <Link href="/map" className="rounded-xl bg-white border shadow-sm p-4">
             <div className="text-sm font-medium">Map</div>
             <div className="text-xs text-gray-500">Find venues & rooms</div>
           </Link>
-          <Link href="/quests" className="rounded-xl bg-white border shadow-sm p-4">
-            <div className="text-sm font-medium">Quests</div>
-            <div className="text-xs text-gray-500">Play & earn rewards</div>
+
+          <Link href="/forum" className="rounded-xl bg-white border shadow-sm p-4">
+            <div className="text-sm font-medium">Forum</div>
+            <div className="text-xs text-gray-500">Discuss sessions & speakers</div>
           </Link>
+
           <Link href="/profile" className="rounded-xl bg-white border shadow-sm p-4">
             <div className="text-sm font-medium">Settings</div>
             <div className="text-xs text-gray-500">Update your profile</div>

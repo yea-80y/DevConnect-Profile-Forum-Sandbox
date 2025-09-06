@@ -65,7 +65,7 @@ async function postProfile(body: unknown): Promise<{ ok: true; owner: Hex0x } | 
 
 export default function ProfileTab() {
   const bee = useMemo(() => new Bee(BEE_URL), []);
-  const { applyLocalUpdate } = useProfile(); // <— in-state UI update after successful saves
+  const { applyLocalUpdate, ensureFresh } = useProfile();
 
   // Form state
   const [displayName, setDisplayName] = useState("");
@@ -164,34 +164,51 @@ export default function ProfileTab() {
       if (!subject0x) throw new Error("No active account – create/select one on the Accounts/Home screen first.");
 
       // (1) Save display name (optional) → topic keyed by subject
-      const nameToSave = displayName.trim();
-      if (nameToSave) {
-        const { owner } = await postProfile({ kind: "name", payload: { name: nameToSave, subject: subject0x } });
-        setOwner0x(owner);
+const nameToSave = displayName.trim();
+if (nameToSave) {
+  const { owner } = await postProfile({
+    kind: "name",
+    payload: { name: nameToSave, subject: subject0x }
+  });
+  setOwner0x(owner);
 
-        // Update in-state profile immediately (no extra network read)
-        applyLocalUpdate({ name: nameToSave });
-        // Cache for instant reads on other screens
-        try {
-          const key = `woco.profile.${subject0x.toLowerCase()}`;
-          const prev = JSON.parse(localStorage.getItem(key) || "{}");
-          localStorage.setItem(key, JSON.stringify({ ...prev, name: nameToSave, updatedAt: Date.now() }));
-        } catch { /* ignore */ }
+      // 1) Update in-state profile immediately (no extra network read)
+      applyLocalUpdate({ name: nameToSave });
 
-        window.dispatchEvent(new Event("profile:updated")); 
+      // 2) Persist local cache for other screens (unchanged)
+      try {
+        const key = `woco.profile.${subject0x.toLowerCase()}`;
+        const prev = JSON.parse(localStorage.getItem(key) || "{}");
+        localStorage.setItem(
+          key,
+          JSON.stringify({ ...prev, name: nameToSave, updatedAt: Date.now() })
+        );
+      } catch { /* ignore */ }
 
-        // DEBUG: feed GET for the name (topic derived from SUBJECT)
-        const subjectNo0x = subject0x.slice(2).toLowerCase();
-        const topicStr = `${FEED_NS}/name/${subjectNo0x}`;
-        const topicHex = Topic.fromString(topicStr).toString();
-        console.log("[profile] name saved via platform signer", {
-          feedOwner0x: owner,
-          subject0x,
-          topicStr,
-          topicHex,
-          feedGET: `${BEE_URL}/feeds/${owner}/${topicHex}`,
-        });
-      }
+      // 3) (optional) clear the input so it feels saved
+      // setDisplayName("");
+
+      // 4) force the read panel to remount (you already listen for this)
+      window.dispatchEvent(new Event("profile:updated"));
+
+      // 5) Give Bee a moment, then re-read the feed so state converges to "live"
+      //    Safe: the *old* feed payload will have the same marker as before,
+      //    so it won't overwrite your freshly applied local state.
+      setTimeout(() => { void ensureFresh(); }, 1200);
+      setTimeout(() => { void ensureFresh(); }, 3000);
+
+      // DEBUG: feed GET for the name (topic derived from SUBJECT)
+      const subjectNo0x = subject0x.slice(2).toLowerCase();
+      const topicStr = `${FEED_NS}/name/${subjectNo0x}`;
+      const topicHex = Topic.fromString(topicStr).toString();
+      console.log("[profile] name saved via platform signer", {
+        feedOwner0x: owner,
+        subject0x,
+        topicStr,
+        topicHex,
+        feedGET: `${BEE_URL}/feeds/${owner}/${topicHex}`,
+      });
+    }
 
       // (2) Upload avatar (if chosen) → immutable BZZ ref → save avatar feed for SUBJECT
       const file = fileRef.current?.files?.[0] ?? null;
@@ -207,9 +224,14 @@ export default function ProfileTab() {
         const { owner } = await postProfile({ kind: "avatar", payload: { imageRef: imageRefHex, subject: subject0x } });
         setOwner0x(owner);
 
-        // Update in-state profile immediately (no extra network read)
-        applyLocalUpdate({ avatarRef: imageRefHex });
-        // Cache for instant reads on other screens
+        // 1) Switch UI to the new ref immediately (no extra read)
+        applyLocalUpdate({ avatarRef: imageRefHex, avatarMarker: Date.now().toString(16) });
+
+        // 2) Clear preview + input (optional but avoids confusion)
+        setPreviewUrl(null);
+        if (fileRef.current) fileRef.current.value = "";
+
+        // 3) Persist cache for other screens (unchanged)
         try {
           const key = `woco.profile.${subject0x.toLowerCase()}`;
           const prev = JSON.parse(localStorage.getItem(key) || "{}");
@@ -217,6 +239,10 @@ export default function ProfileTab() {
         } catch { /* ignore */ }
 
         window.dispatchEvent(new Event("profile:updated"));
+
+        // 4) Give Bee a moment, then re-read the feed so state converges to "live"
+        setTimeout(() => { void ensureFresh(); }, 1200);
+        setTimeout(() => { void ensureFresh(); }, 3000);
 
         // DEBUG: feed GET for the avatar (topic derived from SUBJECT)
         const subjectNo0x = subject0x.slice(2).toLowerCase();
