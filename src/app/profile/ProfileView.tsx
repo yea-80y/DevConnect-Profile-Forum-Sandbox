@@ -43,18 +43,25 @@ export default function ProfileView(props: {
   const name = profile?.name ?? null;
   const avatarRef = profile?.avatarRef ?? null;
 
-  console.log("[ProfileView] avatarRef in state =", profile?.avatarRef)
+  // Sanitize the ref: lowercase and strip any accidental trailing slashes
+  const avatarRefClean = avatarRef ? avatarRef.toLowerCase().replace(/\/+$/, "") : null;
+
+  // Build the exact URL once (NO trailing slash before ?)
+  const avatarSrc = avatarRefClean
+    ? `${BEE_URL}/bzz/${avatarRefClean}${profile?.avatarMarker ? `?v=${profile.avatarMarker}` : ""}`
+    : null;
+
+  // Helpful breadcrumb so we can see the exact URL the browser will fetch
+  console.log("[ProfileView] avatarRef =", avatarRef, "→ avatarSrc =", avatarSrc);
 
 
   return (
     <div className="flex items-center gap-4">
       {/* Avatar (/bzz/{ref} immutable). Add ?v=avatarMarker to nudge caches after updates */}
-      {avatarRef ? (
+      {avatarSrc ? (
         <Image
-          key={`${avatarRef}-${profile?.avatarMarker ?? "0"}`}
-          src={`${BEE_URL}/bzz/${avatarRef}${
-            profile?.avatarMarker ? `?v=${profile.avatarMarker}` : ""
-          }`}
+          key={`${avatarRefClean}-${profile?.avatarMarker ?? "0"}`}
+          src={avatarSrc}
           alt="avatar"
           width={80}
           height={80}

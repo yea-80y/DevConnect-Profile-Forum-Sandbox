@@ -8,6 +8,10 @@ import { BEE_URL, FEED_PRIVATE_KEY, normalizePk } from "@/config/swarm"
 import { topicThread } from "@/lib/forum/topics"
 import { extractFeedPayloadBytes } from "@/lib/forum/bytes"
 
+// 2) Bee + platform signer address (feed owner)
+const bee = new Bee(BEE_URL)
+const owner = new PrivateKey(normalizePk(FEED_PRIVATE_KEY)).publicKey().address()
+
 // --- small utils -------------------------------------------------------------
 
 /** Uint8Array → lowercase hex string (no 0x) */
@@ -53,6 +57,7 @@ function errMsg(e: unknown): string {
  *   payload = 4096B page of 32B refs
  */
 export async function GET(req: NextRequest) {
+  const t0 = Date.now();
   try {
     // 1) Inputs
     const boardId = req.nextUrl.searchParams.get("boardId") ?? ""
@@ -65,10 +70,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "BAD_THREAD_REF" }, { status: 400 })
     }
 
-    // 2) Bee + platform signer address (feed owner)
-    const bee = new Bee(BEE_URL)
-    const owner = new PrivateKey(normalizePk(FEED_PRIVATE_KEY)).publicKey().address()
-
+    
     // 3) Deterministic topic for this thread
     const topic = topicThread(boardId, threadRef)
 
@@ -77,11 +79,13 @@ export async function GET(req: NextRequest) {
 
     // 5) Extract bytes across bee-js payload variants
     const bytes = extractFeedPayloadBytes(res)
+    console.log("[api:thread] feed ms", Date.now() - t0);
 
     // 6) Decode into 64-hex post refs (newest-first)
     const posts = decodeRefs(bytes)
 
     // 7) Respond
+    console.log("[api:thread] total ms", Date.now() - t0);
     return NextResponse.json({ ok: true, boardId, threadRef, posts })
   } catch (e: unknown) {
     console.error("GET /api/forum/thread error:", errMsg(e))

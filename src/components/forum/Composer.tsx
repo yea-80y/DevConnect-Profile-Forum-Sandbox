@@ -39,6 +39,28 @@ export function Composer(props: {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
+    type OptimisticRow = {
+    body: string
+    status: "posting" | "ok" | "error"
+    postRef?: string
+    threadRef?: string
+    error?: string
+    }
+
+    // note: we only keep the setter to avoid the "unused var" warning
+    const [, setOptimistic] = useState<Record<string, OptimisticRow>>({})
+
+    function addOptimistic(localId: string, body: string) {
+    setOptimistic(prev => ({ ...prev, [localId]: { body, status: "posting" } }))
+    }
+
+    function markOptimistic(localId: string, patch: Partial<OptimisticRow>) {
+    setOptimistic(prev => ({
+        ...prev,
+        [localId]: { ...(prev[localId] ?? { body: "", status: "posting" }), ...patch },
+    }))
+    }
+
   // Profile context → immutable snapshot (name + avatarRef)
   const { profile } = useProfile()
 
@@ -55,52 +77,69 @@ export function Composer(props: {
   }, [])
 
   async function onSubmit() {
-    setErr(null)
-    if (!wallet) {
-      setErr("No active account. Create/select one on Home/Accounts.")
-      return
-    }
-    if (!content.trim()) {
-      setErr("Write something first")
-      return
+  setErr(null)
+
+  if (!wallet) { setErr("No active account. Create/select one on Home/Accounts."); return }
+  if (!content.trim()) { setErr("Write something first"); return }
+
+  setBusy(true) // prevent double-clicks during preflight
+
+  // 1) Optimistic stub: instant UX
+  const localId = crypto.randomUUID()
+  addOptimistic(localId, content)
+
+  try {
+    const tBuild0 = performance.now()
+    // 2) Build + sign (preflight)
+    const payload: SignedPostPayload = {
+      subject: wallet.address as `0x${string}`,
+      boardId,
+      threadRef: replyTo ?? undefined,
+      content,
+      contentSha256: (await sha256HexString(content)) as `0x${string}`,
+      displayName: profile?.name ?? undefined,
+      avatarRef:   profile?.avatarRef ?? undefined,
+      createdAt: Date.now(),
+      nonce: crypto.getRandomValues(new Uint32Array(4)).join("-"),
+      version: 1,
     }
 
-    setBusy(true)
-    try {
-      // 1) Build signed payload
-      const payload: SignedPostPayload = {
-        subject: wallet.address as `0x${string}`,
-        boardId,
-        threadRef: replyTo ?? undefined,        // undefined = new thread; set = reply
-        content,
-        contentSha256: (await sha256HexString(content)) as `0x${string}`,
-        displayName: profile?.name ?? undefined,     // snapshot
-        avatarRef:   profile?.avatarRef ?? undefined, // snapshot (64-hex swarm ref)
-        createdAt: Date.now(),
-        nonce: crypto.getRandomValues(new Uint32Array(4)).join("-"), // simple anti-replay
-        version: 1,
+    const message = JSON.stringify(payload)
+    const signed = await wallet.signMessage(message)
+    assertHex0x(signed)
+    const signature = signed
+
+    const tBuild1 = performance.now()
+    console.log("[compose] build+sign ms", Math.round(tBuild1 - tBuild0))
+
+    // 3) Clear input now (snappy) and re-enable button
+    setContent("")
+    setBusy(false)
+
+    // 4) Background publish (DON'T await)
+    ;(async () => {
+      const tNet0 = performance.now() 
+      try {
+        const res = await submitPost({ payload, signature, signatureType: "eip191" })
+        console.log("[compose] /api/forum/post ms", Math.round(performance.now() - tNet0))
+
+        markOptimistic(localId, { status: "ok", postRef: res.postRef, threadRef: res.threadRef })
+        onPosted?.(res)
+      } catch (e: unknown) {
+        console.log("[compose] /api/forum/post FAILED ms", Math.round(performance.now() - tNet0))
+        const msg = e instanceof Error ? e.message : String(e)
+        markOptimistic(localId, { status: "error", error: msg })
+        setErr(msg)
       }
-
-      // 2) EIP-191 sign the JSON string (server checks signer + content hash)
-      const message = JSON.stringify(payload)
-
-      // 🔧 CHANGED: narrow the returned string to `` `0x${string}` `` safely.
-      const signed = await wallet.signMessage(message)
-      assertHex0x(signed)
-      const signature = signed // now typed as `0x${string}`
-
-      // 3) POST to our API
-      const res = await submitPost({ payload, signature, signatureType: "eip191" })
-
-      // 4) Clear and notify parent to refresh
-      setContent("")
-      onPosted?.(res)
-    } catch (e: unknown) {
-      setErr(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
-    }
+    })()
+  } catch (e: unknown) {
+    // if build/sign failed, re-enable and surface error
+    const msg = e instanceof Error ? e.message : String(e)
+    setBusy(false)
+    markOptimistic(localId, { status: "error", error: msg })
+    setErr(msg)
   }
+}
 
   return (
     <div className="rounded border p-3 bg-white/90 space-y-2">
@@ -115,7 +154,7 @@ export function Composer(props: {
       />
 
       <div className="flex items-center gap-2">
-        <Button onClick={onSubmit} disabled={busy}>
+        <Button onClick={onSubmit} disabled={busy || !content.trim()}>
           {busy ? "Posting…" : "Post"}
         </Button>
         {err && <span className="text-xs text-red-600">{err}</span>}

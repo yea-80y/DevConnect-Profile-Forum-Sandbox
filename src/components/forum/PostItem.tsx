@@ -7,33 +7,75 @@
 //     displayName?: string
 //     avatarRef?: string (Swarm 64-hex)
 // - Uses Next/Image with { unoptimized: true } so we don't need next.config.js domains
+// - Robust avatar loading:
+//     1) Try the post's snapshot avatar.
+//     2) If it fails (GC'd/partial/bad URL), fall back to the author's *current* avatar if provided.
+//     3) If that also fails or isn't provided, render a neutral placeholder.
 // -----------------------------------------------------------------------------
 
+import { useMemo, useState } from "react"
 import Image from "next/image"
 import { BEE_URL } from "@/config/swarm"
+
+// Build a safe Bee URL for images uploaded via uploadFile (manifests/files).
+// - Lowercase ref.
+// - Strip accidental trailing slashes.
+// - IMPORTANT: no slash before the query string; e.g. /bzz/<ref>?v=...
+function buildBzzImageUrl(refHex?: string | null, cacheMarker?: string | null) {
+  if (!refHex) return null
+  const clean = refHex.toLowerCase().replace(/\/+$/, "")
+  const qs = cacheMarker ? `?v=${cacheMarker}` : ""
+  return `${BEE_URL}/bzz/${clean}${qs}`
+}
 
 export function PostItem(props: {
   refHex: string
   author: string
   displayName?: string
-  avatarRef?: string
+  avatarRef?: string // snapshot at publish time
   content: string
   createdAt: number
+
+  // 🔽 optional extras (safe: callers can ignore these)
+  currentAvatarRef?: string | null // author's *current* avatar to use as a fallback
+  avatarMarker?: string | null     // optional cache-buster you already use elsewhere
 }) {
-  const { refHex, author, displayName, avatarRef, content, createdAt } = props
+  const {
+    refHex,
+    author,
+    displayName,
+    avatarRef,       // snapshot
+    content,
+    createdAt,
+    currentAvatarRef = null,
+    avatarMarker = null,
+  } = props
+
+  // Robust avatar: snapshot first, then optional current avatar as fallback.
+  const [useFallback, setUseFallback] = useState(false)
+  const primarySrc = useMemo(() => buildBzzImageUrl(avatarRef, avatarMarker), [avatarRef, avatarMarker])
+  const fallbackSrc = useMemo(() => buildBzzImageUrl(currentAvatarRef, avatarMarker), [currentAvatarRef, avatarMarker])
+  const avatarSrc = useFallback ? fallbackSrc : primarySrc
 
   return (
     <div className="rounded border p-3 bg-white/90 flex gap-3">
-      {/* Avatar (snapshot). If missing, render a placeholder circle. */}
+      {/* Avatar (snapshot → fallback → placeholder) */}
       <div>
-        {avatarRef ? (
+        {avatarSrc ? (
           <Image
-            src={`${BEE_URL}/bzz/${avatarRef}`}
+            key={avatarSrc} // ensures rerender when flipping to fallback
+            src={avatarSrc}
             alt="avatar"
             width={44}
             height={44}
             unoptimized
             className="w-11 h-11 rounded-full object-cover border"
+            onError={() => {
+              // If snapshot fails (GC’d/partial/bad URL), try current avatar once.
+              if (!useFallback && fallbackSrc && fallbackSrc !== avatarSrc) {
+                setUseFallback(true)
+              }
+            }}
           />
         ) : (
           <div className="w-11 h-11 rounded-full bg-gray-200 border" />

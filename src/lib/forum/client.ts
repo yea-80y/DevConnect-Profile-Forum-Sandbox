@@ -37,35 +37,102 @@ export async function fetchThread(boardId: string, threadRef: string) {
   return j as { ok: true; boardId: string; threadRef: string; posts: string[] }
 }
 
-/** Fetch canonical post JSON by Swarm ref (try /bytes first, then /bzz) */
+/** Fetch canonical post JSON by Swarm ref (prefer /bytes, fallback to /bzz without trailing slash). */
 export async function fetchPostJSON(refHex: string): Promise<CanonicalPost> {
-  // 1) raw JSON uploads 
-  const r1 = await fetch(`${BEE_URL}/bytes/${refHex}`, { cache: "no-store" });
-  if (r1.ok) return r1.json();
+  const refLower = refHex.toLowerCase();
 
-  // 2) manifest fallback (in case a post was stored as a manifest)
-  const r2 = await fetch(`${BEE_URL}/bzz/${refHex}`, { cache: "no-store" });
-  if (r2.ok) return r2.json();
+  // 1) bytes (this is how the server writes)
+  {
+    const r = await fetch(`${BEE_URL}/bytes/${refLower}`, { cache: "no-store" });
+    if (r.ok) {
+      const txt = await r.text();
+      try {
+        return JSON.parse(txt) as CanonicalPost;
+      } catch {
+        console.error("[fetchPostJSON] Invalid JSON from /bytes:", txt.slice(0, 200));
+        throw new Error(`POST_JSON_PARSE_FAILED_BYTES ${refLower}`);
+      }
+    }
+  }
 
-  // 3) some Bee setups require the trailing slash on /bzz
-  const r3 = await fetch(`${BEE_URL}/bzz/${refHex}/`, { cache: "no-store" });
-  if (r3.ok) return r3.json();
+  // 2) bzz (no trailing slash)
+  {
+    const r = await fetch(`${BEE_URL}/bzz/${refLower}`, { cache: "no-store" });
+    if (r.ok) {
+      const txt = await r.text();
+      try {
+        return JSON.parse(txt) as CanonicalPost;
+      } catch {
+        console.error("[fetchPostJSON] Invalid JSON from /bzz:", txt.slice(0, 200));
+        throw new Error(`POST_JSON_PARSE_FAILED_BZZ ${refLower}`);
+      }
+    }
+  }
 
-  throw new Error(`FETCH_POST_FAILED ${refHex}`);
+  throw new Error(`FETCH_POST_FAILED ${refLower}`);
 }
 
-/** POST /api/forum/post → create thread (no threadRef in payload) or reply (with threadRef) */
+/** POST /api/forum/post → create thread (no threadRef in payload) or reply (with threadRef)
+ *  - Measures client round-trip time and logs it.
+ *  - Parses JSON defensively (no `any`).
+ *  - Narrows the response with a type guard so the return type is safe.
+ */
+type PostOk = { ok: true; postRef: string; threadRef: string };
+
+function isObject(x: unknown): x is Record<string, unknown> {
+  return typeof x === "object" && x !== null;
+}
+
+/** Narrower: ok===true and both refs are strings */
+function isPostOk(x: unknown): x is PostOk {
+  if (!isObject(x)) return false;
+  return x.ok === true && typeof x.postRef === "string" && typeof x.threadRef === "string";
+}
+
+/** Pull a server error string if present (without `any`) */
+function extractError(x: unknown): string | undefined {
+  if (!isObject(x)) return undefined;
+  const v = (x as Record<string, unknown>).error;
+  return typeof v === "string" ? v : undefined;
+}
+
 export async function submitPost(body: {
-  payload: SignedPostPayload
-  signature: `0x${string}`
-  signatureType: SignatureType
+  payload: SignedPostPayload;
+  signature: `0x${string}`;
+  signatureType: SignatureType;
 }) {
+  const t0 = performance.now(); // start timing the network round trip
+
   const r = await fetch("/api/forum/post", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
-  })
-  const j = await r.json()
-  if (!r.ok || !j?.ok) throw new Error(j?.error || "POST_FAILED")
-  return j as { ok: true; postRef: string; threadRef: string }
+  });
+
+  const dt = Math.round(performance.now() - t0); // elapsed ms at response arrival
+
+  let j: unknown;
+  try {
+    j = await r.json();
+  } catch {
+    console.warn("[client] /api/forum/post bad JSON ms", dt);
+    throw new Error("POST_BAD_JSON");
+  }
+
+  // If HTTP failed, try to surface server { error } if available.
+  if (!r.ok) {
+    const msg = extractError(j) ?? "POST_FAILED";
+    console.warn("[client] /api/forum/post failed ms", dt, msg);
+    throw new Error(msg);
+  }
+
+  // Ensure the success shape is exactly what we expect.
+  if (!isPostOk(j)) {
+    const msg = extractError(j) ?? "POST_FAILED";
+    console.warn("[client] /api/forum/post malformed ms", dt, msg);
+    throw new Error(msg);
+  }
+
+  console.log("[client] /api/forum/post ok ms", dt);
+  return j; // `j` is narrowed to PostOk here
 }

@@ -8,6 +8,10 @@ import { BEE_URL, FEED_PRIVATE_KEY, normalizePk } from "@/config/swarm"
 import { topicBoard } from "@/lib/forum/topics"
 import { extractFeedPayloadBytes } from "@/lib/forum/bytes"
 
+// 2) Construct Bee client + derive feed owner (platform signer)
+const bee = new Bee(BEE_URL)
+const owner = new PrivateKey(normalizePk(FEED_PRIVATE_KEY)).publicKey().address()
+
 // --- small utils -------------------------------------------------------------
 
 /** Uint8Array → lowercase hex string (no 0x) */
@@ -60,16 +64,13 @@ function errMsg(e: unknown): string {
  *   payload = 4096B page of 32B refs
  */
 export async function GET(req: NextRequest) {
+  const t0 = Date.now(); // 
   try {
     // 1) Validate input
     const boardId = req.nextUrl.searchParams.get("boardId") ?? ""
     if (!boardId) {
       return NextResponse.json({ ok: false, error: "MISSING_BOARD_ID" }, { status: 400 })
     }
-
-    // 2) Construct Bee client + derive feed owner (platform signer)
-    const bee = new Bee(BEE_URL)
-    const owner = new PrivateKey(normalizePk(FEED_PRIVATE_KEY)).publicKey().address()
 
     // 3) Deterministic topic for "board page"
     const topic = topicBoard(boardId)
@@ -79,7 +80,9 @@ export async function GET(req: NextRequest) {
     try {
     const res = await bee.makeFeedReader(topic, owner).downloadPayload();
     bytes = extractFeedPayloadBytes(res);
+    console.log("[api:board] feed ms", Date.now() - t0);
     } catch (e) {
+    
     // If the board feed hasn't been written yet, treat as empty (bchan behaviour)
     const msg = errMsg(e).toLowerCase();
     const notInitialised =
@@ -95,6 +98,7 @@ export async function GET(req: NextRequest) {
     const threads = bytes ? decodeRefs(bytes) : [];
 
     // 6) Respond
+    console.log("[api:board] total ms", Date.now() - t0);
     return NextResponse.json({ ok: true, boardId, threads });
   } catch (e: unknown) {
     console.error("GET /api/forum/board error:", errMsg(e))
