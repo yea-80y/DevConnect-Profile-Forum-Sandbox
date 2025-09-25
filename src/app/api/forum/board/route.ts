@@ -1,107 +1,101 @@
 // src/app/api/forum/board/route.ts
 export const dynamic = "force-dynamic";
-export const runtime = "nodejs"
+export const runtime = "nodejs";
 
-import { NextRequest, NextResponse } from "next/server"
-import { Bee, PrivateKey } from "@ethersphere/bee-js"
-import { BEE_URL, FEED_PRIVATE_KEY, normalizePk } from "@/config/swarm"
-import { topicBoard } from "@/lib/forum/topics"
-import { extractFeedPayloadBytes } from "@/lib/forum/bytes"
+import { NextRequest, NextResponse } from "next/server";
+import { Bee, PrivateKey } from "@ethersphere/bee-js";
+import { BEE_URL, FEED_PRIVATE_KEY, normalizePk } from "@/config/swarm";
+import { topicBoard } from "@/lib/forum/topics";
+import { extractFeedPayloadBytes } from "@/lib/forum/bytes"; // your helper
 
-// 2) Construct Bee client + derive feed owner (platform signer)
-const bee = new Bee(BEE_URL)
-const owner = new PrivateKey(normalizePk(FEED_PRIVATE_KEY)).publicKey().address()
+// Construct Bee + derive feed owner (platform signer).
+// NOTE: If you ever rotate FEED_PRIVATE_KEY you won't see old board pages,
+// because feed reads are keyed by (topic, ownerAddress).
+const bee = new Bee(BEE_URL);
+const owner = new PrivateKey(normalizePk(FEED_PRIVATE_KEY)).publicKey().address();
 
-// --- small utils -------------------------------------------------------------
-
-/** Uint8Array → lowercase hex string (no 0x) */
+// Uint8Array → lowercase hex (no 0x)
 function toHex(u8: Uint8Array): string {
-  let s = ""
-  for (let i = 0; i < u8.length; i++) s += u8[i].toString(16).padStart(2, "0")
-  return s
+  let s = "";
+  for (let i = 0; i < u8.length; i++) s += u8[i].toString(16).padStart(2, "0");
+  return s;
 }
 
 /**
  * Decode a 4096-byte "page" into an array of 32-byte refs (newest-first).
- * This matches bchan's packer (and your pack.ts):
- * - Page = 4096B
- * - Each entry = 32B (Swarm ref)
- * - Max 128 entries
- * - Zero-filled tail indicates "no more entries"
+ * Layout:
+ *   - Page size = 4096 bytes
+ *   - Entry     = 32 bytes (Swarm ref)
+ *   - Max       = 128 entries
+ *   - Zero-filled tail = no more entries
  */
-function decodeRefs(page: Uint8Array): string[] {
-  const out: string[] = []
+function decodePage(page: Uint8Array): string[] {
+  const out: string[] = [];
   for (let off = 0; off + 32 <= page.length; off += 32) {
-    const slice = page.subarray(off, off + 32)
-
-    // stop when we hit an all-zero entry
-    let allZero = true
+    const slice = page.subarray(off, off + 32);
+    // stop at the first all-zero entry
+    let allZero = true;
     for (let i = 0; i < 32; i++) {
-      if (slice[i] !== 0) { allZero = false; break }
+      if (slice[i] !== 0) { allZero = false; break; }
     }
-    if (allZero) break
-
-    out.push(toHex(slice)) // push as 64-hex (no 0x)
+    if (allZero) break;
+    out.push(toHex(slice)); // push as 64-hex (no 0x)
   }
-  return out // newest-first
+  return out;
 }
 
-/** Convert unknown error to readable string (no `any`) */
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e)
-}
-
-// --- handler ----------------------------------------------------------------
+// Small helper: normalize unknown error to string
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /**
- * GET /api/forum/board?boardId=devconnect:general
- *
- * Reads the *board* feed page owned by the platform signer and returns an array
- * of thread root refs (64-hex, newest-first). This mirrors bchan:
- *
- *   topic = keccak256("board:" + boardId)
- *   owner = platform signer address (feeds are owned by platform)
- *   payload = 4096B page of 32B refs
+ * GET /api/forum/board?boardId=<namespace:board>
+ * Reads the board page (binary 4096B) written by the platform signer and returns
+ * an array of thread-root refs (64-hex, newest-first). If the feed isn't
+ * initialised yet, returns an empty list (no 500).
  */
 export async function GET(req: NextRequest) {
-  const t0 = Date.now(); // 
+  const t0 = Date.now();
   try {
-    // 1) Validate input
-    const boardId = req.nextUrl.searchParams.get("boardId") ?? ""
+    const boardId = (req.nextUrl.searchParams.get("boardId") || "").trim();
+
     if (!boardId) {
-      return NextResponse.json({ ok: false, error: "MISSING_BOARD_ID" }, { status: 400 })
+      return NextResponse.json({ ok: false, error: "MISSING_BOARD_ID" }, { status: 400 });
+    }
+    // Allow alphanum + dot/underscore/dash/colon (covers "devconnect_test:general")
+    if (!/^[a-z0-9._:-]{1,64}$/i.test(boardId)) {
+      return NextResponse.json({ ok: false, error: "BAD_BOARD_ID" }, { status: 400 });
+    }
+    if (!BEE_URL || !FEED_PRIVATE_KEY) {
+      return NextResponse.json({ ok: false, error: "SERVER_ENV" }, { status: 500 });
     }
 
-    // 3) Deterministic topic for "board page"
-    const topic = topicBoard(boardId)
+    // Deterministic topic for this board ID
+    const topic = topicBoard(boardId);
 
-    // 4) Try to read latest feed payload (single 4096B page) — tolerate uninitialised feed
-    let bytes: Uint8Array | null = null;
+    // Read latest feed payload (single 4096B page); tolerate non-initialised feed
+    let pageBytes: Uint8Array | null = null;
     try {
-    const res = await bee.makeFeedReader(topic, owner).downloadPayload();
-    bytes = extractFeedPayloadBytes(res);
-    console.log("[api:board] feed ms", Date.now() - t0);
+      const res = await bee.makeFeedReader(topic, owner).downloadPayload();
+      pageBytes = extractFeedPayloadBytes(res); // your helper → Uint8Array or throw
+      console.log("[api:board] feed ms", Date.now() - t0);
     } catch (e) {
-    
-    // If the board feed hasn't been written yet, treat as empty (bchan behaviour)
-    const msg = errMsg(e).toLowerCase();
-    const notInitialised =
+      const msg = errMsg(e).toLowerCase();
+      const notInit =
         msg.includes("404") ||
         msg.includes("not found") ||
         msg.includes("no feed update") ||
         msg.includes("feed not found");
-    if (!notInitialised) throw e;
-    bytes = null;
+      if (!notInit) throw e;
+      pageBytes = null;
     }
 
-    // 5) Decode page (if present) into a list of 64-hex thread root refs (newest-first)
-    const threads = bytes ? decodeRefs(bytes) : [];
+    // Decode page into 64-hex thread roots (newest-first)
+    const threads = pageBytes ? decodePage(pageBytes) : [];
 
-    // 6) Respond
     console.log("[api:board] total ms", Date.now() - t0);
     return NextResponse.json({ ok: true, boardId, threads });
   } catch (e: unknown) {
-    console.error("GET /api/forum/board error:", errMsg(e))
-    return NextResponse.json({ ok: false, error: "SERVER_ERROR" }, { status: 500 })
+    console.error("GET /api/forum/board error:", errMsg(e));
+    return NextResponse.json({ ok: false, error: "SERVER_ERROR" }, { status: 500 });
   }
 }

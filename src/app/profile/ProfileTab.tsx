@@ -33,6 +33,13 @@ import { Wallet } from "ethers"; // ethers v6 (for deriving subject address)
 import { FEED_NS } from "@/lib/swarm-core/topics";
 import { useProfile } from "@/lib/profile/context";
 
+function to64Hex(s: string | null | undefined): string {
+  if (!s) throw new Error("missing ref")
+  const h = s.toLowerCase().replace(/^0x/, "").replace(/[^0-9a-f]/g, "")
+  if (h.length !== 64) throw new Error(`bad ref length: ${h.length}`)
+  return h
+}
+
 /* ----------------------------- Types (client) ----------------------------- */
 
 type Hex0x = `0x${string}`
@@ -215,17 +222,21 @@ if (nameToSave) {
       if (file) {
         const uploadRes = await bee.uploadFile(POSTAGE_BATCH_ID, file, file.name);
         const imageRefHex = uploadRes.reference.toHex();
+        const cleanRef = to64Hex(imageRefHex); // <-- ensure exactly 64-hex
 
         console.log("[profile] avatar uploaded (immutable BZZ)", {
-          imageRefHex,
-          bzz: `${BEE_URL}/bzz/${imageRefHex}`,
+          imageRefHex: cleanRef,
+          bzz: `${BEE_URL}/bzz/${cleanRef}`,
         });
 
-        const { owner } = await postProfile({ kind: "avatar", payload: { imageRef: imageRefHex, subject: subject0x } });
+        const { owner } = await postProfile({
+          kind: "avatar",
+          payload: { imageRef: cleanRef, subject: subject0x }
+        });
         setOwner0x(owner);
 
         // 1) Switch UI to the new ref immediately (no extra read)
-        applyLocalUpdate({ avatarRef: imageRefHex, avatarMarker: Date.now().toString(16) });
+        applyLocalUpdate({ avatarRef: cleanRef, avatarMarker: Date.now().toString(16) });
 
         // 2) Clear preview + input (optional but avoids confusion)
         setPreviewUrl(null);
@@ -235,7 +246,7 @@ if (nameToSave) {
         try {
           const key = `woco.profile.${subject0x.toLowerCase()}`;
           const prev = JSON.parse(localStorage.getItem(key) || "{}");
-          localStorage.setItem(key, JSON.stringify({ ...prev, avatarRef: imageRefHex, updatedAt: Date.now() }));
+          localStorage.setItem(key, JSON.stringify({ ...prev, avatarRef: cleanRef, updatedAt: Date.now() }));
         } catch { /* ignore */ }
 
         window.dispatchEvent(new Event("profile:updated"));
@@ -279,7 +290,7 @@ if (nameToSave) {
             <Input
               value={displayName}
               onChange={(e: ChangeEvent<HTMLInputElement>) => setDisplayName(e.target.value)}
-              placeholder="e.g. Nabil Abbas"
+              placeholder="e.g. Nickname"
             />
           </div>
 

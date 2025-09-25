@@ -1,13 +1,15 @@
 // src/components/forum/Composer.tsx
 "use client"
 
-// -----------------------------------------------------------------------------
-// Composer
-// - If replyTo is undefined → creates a new thread (post becomes thread root)
-// - If replyTo is set (64-hex) → creates a reply in that thread
-// - Signs message with Wallet(privateKey) from localStorage (dev flow)
-// - Includes *snapshot* profile fields from your ProfileContext into the payload
-// -----------------------------------------------------------------------------
+/**
+ * Composer
+ * - New thread when replyTo is undefined
+ * - Reply when replyTo is a 64-hex thread root
+ * - Uses a dev Wallet(privateKey) from localStorage
+ * - Embeds a *snapshot* of current profile (name + avatarRef) into the payload
+ * - OPTIMISTIC UI: immediately emits onOptimistic(), then does the network submit in background.
+ *   When the server confirms, emits onPosted() with the same clientTag so the page can replace.
+ */
 
 import { ChangeEvent, useMemo, useState } from "react"
 import { Wallet } from "ethers"
@@ -17,51 +19,70 @@ import { submitPost } from "@/lib/forum/client"
 import type { SignedPostPayload } from "@/lib/forum/types"
 import { useProfile } from "@/lib/profile/context"
 
-// 🔧 ADDED: tiny runtime + TS guard that narrows `string` → `` `0x${string}` ``.
-function assertHex0x(v: string): asserts v is `0x${string}` {
-  if (!/^0x[0-9a-fA-F]+$/.test(v)) {
-    throw new Error("Signature not valid hex with 0x prefix")
-  }
+// --- helpers ------------------------------------------------------------------
+
+const to64Hex = (s?: string | null) => {
+  if (!s) return null
+  const h = s.toLowerCase().replace(/^0x/, "").replace(/[^0-9a-f]/g, "")
+  return h.length === 64 ? h : null
 }
 
-// LocalStorage keys where you keep the dev account private key
+// Read a 64-hex avatar content hash from any of our known profile shapes (no `any`)
+function pickAvatarRefFromProfile(profile: unknown): string | null {
+  if (!profile || typeof profile !== "object") return null
+  const r = profile as Record<string, unknown>
+
+  const direct = typeof r["avatarRef"] === "string" ? to64Hex(r["avatarRef"]) : null
+  const hex    = typeof r["avatarRefHex"] === "string" ? to64Hex(r["avatarRefHex"]) : null
+
+  const avatar = r["avatar"]
+  const nested = avatar && typeof avatar === "object"
+    ? ((): string | null => {
+        const ra = avatar as Record<string, unknown>
+        return typeof ra["ref"] === "string" ? to64Hex(ra["ref"]) : null
+      })()
+    : null
+
+  return direct ?? hex ?? nested ?? null
+}
+
+// Narrow at runtime for typed signature
+function assertHex0x(v: string): asserts v is `0x${string}` {
+  if (!/^0x[0-9a-fA-F]+$/.test(v)) throw new Error("Signature not valid hex (0x…) ")
+}
+
+// LocalStorage keys for the dev wallet private key
 const ACTIVE_PK_KEY = "woco.active_pk"
 const LEGACY_PK_KEY = "demo_user_pk"
 
+// --- component ----------------------------------------------------------------
+
 export function Composer(props: {
   boardId: string
-  replyTo?: string // 64-hex thread root ref when replying
-  onPosted?: (res: { postRef: string; threadRef: string }) => void
+  replyTo?: string // 64-hex root when replying
+  /**
+   * Fired immediately with a locally-tagged placeholder (clientTag) so the page
+   * can insert the post/thread *instantly*.
+   */
+  onOptimistic?: (o: {
+    clientTag: string
+    postRef: string
+    threadRef: string
+    payload: SignedPostPayload
+  }) => void
+  /**
+   * Fired when the server confirms; includes the same clientTag so the page can
+   * replace the optimistic row with the real ref.
+   */
+  onPosted?: (res: { postRef: string; threadRef: string; clientTag?: string }) => void
 }) {
-  const { boardId, replyTo, onPosted } = props
+  const { boardId, replyTo, onOptimistic, onPosted } = props
 
   const [content, setContent] = useState("")
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-    type OptimisticRow = {
-    body: string
-    status: "posting" | "ok" | "error"
-    postRef?: string
-    threadRef?: string
-    error?: string
-    }
-
-    // note: we only keep the setter to avoid the "unused var" warning
-    const [, setOptimistic] = useState<Record<string, OptimisticRow>>({})
-
-    function addOptimistic(localId: string, body: string) {
-    setOptimistic(prev => ({ ...prev, [localId]: { body, status: "posting" } }))
-    }
-
-    function markOptimistic(localId: string, patch: Partial<OptimisticRow>) {
-    setOptimistic(prev => ({
-        ...prev,
-        [localId]: { ...(prev[localId] ?? { body: "", status: "posting" }), ...patch },
-    }))
-    }
-
-  // Profile context → immutable snapshot (name + avatarRef)
+  // Snapshot current profile (name + avatarRef) for embedding in payload
   const { profile } = useProfile()
 
   // Load dev wallet (private key) from localStorage once
@@ -77,75 +98,87 @@ export function Composer(props: {
   }, [])
 
   async function onSubmit() {
-  setErr(null)
+    setErr(null)
 
-  if (!wallet) { setErr("No active account. Create/select one on Home/Accounts."); return }
-  if (!content.trim()) { setErr("Write something first"); return }
+    if (!wallet) { setErr("No active account. Create/select one on Home/Accounts."); return }
+    if (!content.trim()) { setErr("Write something first"); return }
 
-  setBusy(true) // prevent double-clicks during preflight
+    setBusy(true) // block double-clicks during preflight
 
-  // 1) Optimistic stub: instant UX
-  const localId = crypto.randomUUID()
-  addOptimistic(localId, content)
+    // Make an optimistic local id to correlate UI + final server refs
+    const clientTag = crypto.randomUUID()
+    const localPostRef   = `local:${clientTag}`
+    const localThreadRef = replyTo ?? `local:${clientTag}`
 
-  try {
-    const tBuild0 = performance.now()
-    // 2) Build + sign (preflight)
-    const payload: SignedPostPayload = {
-      subject: wallet.address as `0x${string}`,
-      boardId,
-      threadRef: replyTo ?? undefined,
-      content,
-      contentSha256: (await sha256HexString(content)) as `0x${string}`,
-      displayName: profile?.name ?? undefined,
-      avatarRef:   profile?.avatarRef ?? undefined,
-      createdAt: Date.now(),
-      nonce: crypto.getRandomValues(new Uint32Array(4)).join("-"),
-      version: 1,
-    }
+    try {
+      const t0 = performance.now()
 
-    const message = JSON.stringify(payload)
-    const signed = await wallet.signMessage(message)
-    assertHex0x(signed)
-    const signature = signed
+      // --- Build the SignedPostPayload (fast) ---------------------------------
+      const snapshotAvatarRef = pickAvatarRefFromProfile(profile)
+      const contentHash = (await sha256HexString(content)) as `0x${string}`
 
-    const tBuild1 = performance.now()
-    console.log("[compose] build+sign ms", Math.round(tBuild1 - tBuild0))
-
-    // 3) Clear input now (snappy) and re-enable button
-    setContent("")
-    setBusy(false)
-
-    // 4) Background publish (DON'T await)
-    ;(async () => {
-      const tNet0 = performance.now() 
-      try {
-        const res = await submitPost({ payload, signature, signatureType: "eip191" })
-        console.log("[compose] /api/forum/post ms", Math.round(performance.now() - tNet0))
-
-        markOptimistic(localId, { status: "ok", postRef: res.postRef, threadRef: res.threadRef })
-        onPosted?.(res)
-      } catch (e: unknown) {
-        console.log("[compose] /api/forum/post FAILED ms", Math.round(performance.now() - tNet0))
-        const msg = e instanceof Error ? e.message : String(e)
-        markOptimistic(localId, { status: "error", error: msg })
-        setErr(msg)
+      const payload: SignedPostPayload = {
+        subject: wallet.address as `0x${string}`,
+        boardId,
+        threadRef: replyTo ?? undefined,
+        content,
+        contentSha256: contentHash,
+        displayName: profile?.name ?? undefined,
+        avatarRef: snapshotAvatarRef ?? undefined, // include only if present
+        createdAt: Date.now(),
+        nonce: crypto.getRandomValues(new Uint32Array(4)).join("-"),
+        version: 1,
       }
-    })()
-  } catch (e: unknown) {
-    // if build/sign failed, re-enable and surface error
-    const msg = e instanceof Error ? e.message : String(e)
-    setBusy(false)
-    markOptimistic(localId, { status: "error", error: msg })
-    setErr(msg)
+
+      // --- Fire OPTIMISTIC callback immediately (no network yet) --------------
+      onOptimistic?.({
+        clientTag,
+        postRef: localPostRef,
+        threadRef: localThreadRef,
+        payload,
+      })
+
+      // --- Sign the payload (dev) ---------------------------------------------
+      const signed = await wallet.signMessage(JSON.stringify(payload))
+      assertHex0x(signed)
+      const signature = signed
+
+      // Clear input early for snappy feel; background submit will continue
+      setContent("")
+      setBusy(false)
+
+      console.log("[compose] build+sign ms", Math.round(performance.now() - t0))
+
+      // --- Background publish (DON'T await UI) --------------------------------
+      ;(async () => {
+        const tNet0 = performance.now()
+        try {
+          const res = await submitPost({ payload, signature, signatureType: "eip191" })
+          console.log("[compose] /api/forum/post ms", Math.round(performance.now() - tNet0))
+
+          // Server confirmed; let the page swap the optimistic row for real ones
+          onPosted?.({ ...res, clientTag })
+        } catch (e: unknown) {
+          console.log("[compose] /api/forum/post FAILED ms", Math.round(performance.now() - tNet0))
+          const msg = e instanceof Error ? e.message : String(e)
+          setErr(msg)
+          // Optional: you could emit a failure event with clientTag for the page to mark the row
+          // onPosted?.({ postRef: localPostRef, threadRef: localThreadRef, clientTag })
+        }
+      })()
+    } catch (e: unknown) {
+      // Preflight failed (e.g., signing error)
+      setBusy(false)
+      const msg = e instanceof Error ? e.message : String(e)
+      setErr(msg)
+    }
   }
-}
 
   return (
     <div className="rounded border p-3 bg-white/90 space-y-2">
       <div className="text-sm font-semibold">{replyTo ? "Reply" : "Start a thread"}</div>
 
-      {/* Textarea (simplest; avoids typing issues of custom inputs) */}
+      {/* Plain textarea keeps typing perf solid */}
       <textarea
         value={content}
         onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setContent(e.target.value)}

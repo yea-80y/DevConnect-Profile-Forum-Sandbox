@@ -1,84 +1,151 @@
 // src/components/forum/PostItem.tsx
 "use client"
 
-// -----------------------------------------------------------------------------
-// PostItem
-// - Renders one post using the immutable snapshot from the post payload:
-//     displayName?: string
-//     avatarRef?: string (Swarm 64-hex)
-// - Uses Next/Image with { unoptimized: true } so we don't need next.config.js domains
-// - Robust avatar loading:
-//     1) Try the post's snapshot avatar.
-//     2) If it fails (GC'd/partial/bad URL), fall back to the author's *current* avatar if provided.
-//     3) If that also fails or isn't provided, render a neutral placeholder.
-// -----------------------------------------------------------------------------
+import NextImage from "next/image"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { normRef, getLatestAvatarRefCached } from "@/lib/avatar"
 
-import { useMemo, useState } from "react"
-import Image from "next/image"
-import { BEE_URL } from "@/config/swarm"
-
-// Build a safe Bee URL for images uploaded via uploadFile (manifests/files).
-// - Lowercase ref.
-// - Strip accidental trailing slashes.
-// - IMPORTANT: no slash before the query string; e.g. /bzz/<ref>?v=...
-function buildBzzImageUrl(refHex?: string | null, cacheMarker?: string | null) {
-  if (!refHex) return null
-  const clean = refHex.toLowerCase().replace(/\/+$/, "")
-  const qs = cacheMarker ? `?v=${cacheMarker}` : ""
-  return `${BEE_URL}/bzz/${clean}${qs}`
+// Preload & decode an image off-DOM; resolve only when ready to paint.
+function preloadImage(url: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const img = new window.Image()
+    img.onload = () => {
+      const d = (img as HTMLImageElement).decode?.()
+      if (d && typeof d.then === "function") {
+        d.then(() => resolve()).catch(() => resolve())
+      } else {
+        resolve()
+      }
+    }
+    img.onerror = () => reject(new Error("img error"))
+    img.src = url
+  })
 }
 
 export function PostItem(props: {
   refHex: string
   author: string
   displayName?: string
-  avatarRef?: string // snapshot at publish time
+  avatarRef?: string            // snapshot at time of posting (may be broken/missing)
   content: string
   createdAt: number
-
-  // 🔽 optional extras (safe: callers can ignore these)
-  currentAvatarRef?: string | null // author's *current* avatar to use as a fallback
-  avatarMarker?: string | null     // optional cache-buster you already use elsewhere
+  currentAvatarRef?: string | null
 }) {
   const {
     refHex,
     author,
     displayName,
-    avatarRef,       // snapshot
+    avatarRef,
     content,
     createdAt,
     currentAvatarRef = null,
-    avatarMarker = null,
   } = props
 
-  // Robust avatar: snapshot first, then optional current avatar as fallback.
-  const [useFallback, setUseFallback] = useState(false)
-  const primarySrc = useMemo(() => buildBzzImageUrl(avatarRef, avatarMarker), [avatarRef, avatarMarker])
-  const fallbackSrc = useMemo(() => buildBzzImageUrl(currentAvatarRef, avatarMarker), [currentAvatarRef, avatarMarker])
-  const avatarSrc = useFallback ? fallbackSrc : primarySrc
+  // Start with snapshot; else "current" (if provided); else null.
+  const initialRef = useMemo(
+    () => normRef(avatarRef) ?? normRef(currentAvatarRef),
+    [avatarRef, currentAvatarRef]
+  )
+
+  // The ref currently shown in <Image>.
+  const [displayRef, setDisplayRef] = useState<string | null>(initialRef)
+  // Cache-buster used ONLY when we switch refs.
+  const [marker, setMarker] = useState<string>("")
+  // Whether the <Image> should be visible (we fade it in/out).
+  const [visible, setVisible] = useState<boolean>(!!initialRef)
+  // Prevent overlapping heal attempts.
+  const healing = useRef(false)
+  // Guard against state updates after unmount.
+  const alive = useRef(true)
+
+  useEffect(() => {
+    alive.current = true
+    return () => { alive.current = false }
+  }, [])
+
+  // Whenever the post/author changes, reset to the new initial candidate.
+  useEffect(() => {
+    setDisplayRef(initialRef ?? null)
+    setVisible(!!initialRef)
+    healing.current = false
+  }, [initialRef, author])
+
+  // Build the proxy URL for a given ref.
+  const src =
+    displayRef ? `/api/swarm/img/${displayRef}${marker ? `?v=${marker}` : ""}` : null
+
+  // If there is no initial ref at all, try to heal once (no flicker—placeholder stays).
+  useEffect(() => {
+    if (displayRef || healing.current) return
+    healing.current = true
+    ;(async () => {
+      try {
+        const healed = normRef(await getLatestAvatarRefCached(author))
+        if (!healed || !alive.current) return
+        const url = `/api/swarm/img/${healed}?v=${Date.now()}`
+        await preloadImage(url)
+        if (!alive.current) return
+        setMarker(String(Date.now()))
+        setDisplayRef(healed)
+        setVisible(true)
+      } finally {
+        healing.current = false
+      }
+    })()
+  }, [author, displayRef])
+
+  // If the snapshot image fails, heal without blanking to null.
+  const handleError = () => {
+    if (healing.current) return
+    healing.current = true
+    // Hide the broken image; placeholder underneath will show.
+    setVisible(false)
+    ;(async () => {
+      try {
+        const healed = normRef(await getLatestAvatarRefCached(author))
+        if (!healed || healed === displayRef || !alive.current) {
+          // Couldn’t heal; show placeholder.
+          setDisplayRef(null)
+          setVisible(true)
+          return
+        }
+        const url = `/api/swarm/img/${healed}?v=${Date.now()}`
+        await preloadImage(url) // ensure new image is decoded before swap
+        if (!alive.current) return
+        setMarker(String(Date.now()))
+        setDisplayRef(healed)
+        setVisible(true) // fade in ready image
+      } finally {
+        healing.current = false
+      }
+    })()
+  }
 
   return (
     <div className="rounded border p-3 bg-white/90 flex gap-3">
-      {/* Avatar (snapshot → fallback → placeholder) */}
-      <div>
-        {avatarSrc ? (
-          <Image
-            key={avatarSrc} // ensures rerender when flipping to fallback
-            src={avatarSrc}
+      {/* Avatar: always render a solid placeholder behind the image. */}
+      <div className="relative w-11 h-11">
+        {/* Placeholder background (never unmounts) */}
+        <div className="absolute inset-0 rounded-full bg-gray-200 border" />
+
+        {src && (
+          <NextImage
+            // Do NOT set a key on src; keep the element mounted to avoid flashes.
+            src={src}
             alt="avatar"
-            width={44}
-            height={44}
+            fill
+            sizes="44px"
             unoptimized
-            className="w-11 h-11 rounded-full object-cover border"
-            onError={() => {
-              // If snapshot fails (GC’d/partial/bad URL), try current avatar once.
-              if (!useFallback && fallbackSrc && fallbackSrc !== avatarSrc) {
-                setUseFallback(true)
-              }
-            }}
+            loading="eager"
+            priority
+            // Rounded & cover; crossfade on visibility toggles.
+            className={`rounded-full object-cover border transition-opacity duration-150 ${
+              visible ? "opacity-100" : "opacity-0"
+            }`}
+            onError={handleError}
+            onLoad={() => setVisible(true)} // ensures we fade in if browser decodes fast
+            draggable={false}
           />
-        ) : (
-          <div className="w-11 h-11 rounded-full bg-gray-200 border" />
         )}
       </div>
 
@@ -93,8 +160,6 @@ export function PostItem(props: {
         </div>
 
         <div className="text-sm whitespace-pre-wrap mt-1">{content}</div>
-
-        {/* Debug/reference */}
         <div className="text-[10px] text-gray-400 break-all mt-2">ref: {refHex}</div>
       </div>
     </div>

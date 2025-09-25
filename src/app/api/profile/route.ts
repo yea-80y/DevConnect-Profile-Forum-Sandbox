@@ -163,40 +163,123 @@ export async function POST(req: Request) {
 
 // GET returns the platform owner (0x...) and, if available, the "generated user" address
 // by reading the latest verify feed entry: devconnect/profile/verify/{ownerNo0x}
-export async function GET() {
+
+// Minimal, subject-aware GET for profile data.
+// - Supports ?subject=0x... to fetch that user's name + avatarRef
+// - Reads the latest feed entries (JSON only) written by your POST endpoints
+// - Returns { ok, owner, subject?, name?, avatarRef? }
+// - Sends Cache-Control: no-store to avoid stale reads in dev
+export async function GET(req: Request) {
+  // Basic env guards
   if (!FEED_PRIVATE_KEY) {
-    return NextResponse.json({ ok: false, error: "Missing FEED_PRIVATE_KEY" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: "Missing FEED_PRIVATE_KEY" },
+      { status: 500, headers: { "Cache-Control": "no-store" } }
+    );
   }
   if (!BEE_URL) {
-    return NextResponse.json({ ok: false, error: "Missing BEE_URL" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: "Missing BEE_URL" },
+      { status: 500, headers: { "Cache-Control": "no-store" } }
+    );
   }
 
-  // Construct Bee client and platform signer (feed owner)
+  // Bee client + platform signer (feed owner that writes the per-user topics)
   const bee = new Bee(BEE_URL);
   const signer = new PrivateKey(normalizePk(FEED_PRIVATE_KEY));
-  const ownerAddr  = signer.publicKey().address();         // EthAddress object
-  const ownerNo0x  = ownerAddr.toHex().toLowerCase();      // hex w/o 0x for topic strings
-  const owner0x    = `0x${ownerNo0x}` as `0x${string}`;     // hex with 0x for UI/API
+  const ownerAddr  = signer.publicKey().address();   // bee-js EthAddress object
+  const ownerNo0x  = ownerAddr.toHex().toLowerCase(); // hex without 0x for topic strings
+  const owner0x    = `0x${ownerNo0x}` as `0x${string}`; // hex with 0x for UI/API
 
-  // Try to derive the generated user from the latest verify feed payload
+  // Small helper: normalize to strict 64-hex (no 0x)
+  const to64Hex = (s?: string | null) => {
+    if (!s) return null;
+    const h = s.toLowerCase().replace(/^0x/, "");
+    return /^[0-9a-f]{64}$/.test(h) ? h : null;
+  };
+
+  // Parse optional subject (?subject=0x...) requested by the client
+  const { searchParams } = new URL(req.url);
+  const subjectParam = searchParams.get("subject");
+
+  // If a subject is provided, return that subject's latest profile snapshot
+  if (subjectParam) {
+    // Validate 0x address
+    const subject0x = subjectParam.toLowerCase() as `0x${string}`;
+    if (!/^0x[0-9a-f]{40}$/i.test(subject0x)) {
+      return NextResponse.json(
+        { ok: false, error: "Invalid subject address" },
+        { status: 400, headers: { "Cache-Control": "no-store" } }
+      );
+    }
+
+    // Feeds/topics use NO-0x subject
+    const subjectNo0x = subject0x.slice(2);
+
+    let name: string | null = null;
+    let avatarRef: string | null = null;
+
+    // ---- Read "name" feed (JSON written by POST kind:name) ----
+    try {
+      const tName  = topicName(subjectNo0x);
+      const rName  = bee.makeFeedReader(tName, ownerAddr);
+      const latest = await rName.downloadPayload();
+      if (latest?.payload) {
+        const text = latest.payload.toUtf8();
+        try {
+          // Preferred: JSON shape { name }
+          const j = JSON.parse(text) as { name?: string };
+          if (typeof j.name === "string") name = j.name;
+        } catch {
+          // Legacy convenience: plain text name was stored
+          name = text;
+        }
+      }
+    } catch {
+      // no name yet → fine; leave null
+    }
+
+    // ---- Read "avatar" feed (JSON written by POST kind:avatar) ----
+    try {
+      const tAvatar = topicAvatar(subjectNo0x);
+      const rAvatar = bee.makeFeedReader(tAvatar, ownerAddr);
+      const latest  = await rAvatar.downloadPayload();
+      if (latest?.payload) {
+        const text = latest.payload.toUtf8();
+        // Current format: JSON with { imageRef } (or { avatarRef } if you ever rename on write)
+        const j = JSON.parse(text) as { imageRef?: string; avatarRef?: string };
+        avatarRef = to64Hex(j.imageRef ?? j.avatarRef ?? null);
+      }
+    } catch {
+      // no avatar yet → fine; leave null (UI will render the grey placeholder)
+    }
+
+    // Respond with the normalized fields used by your UI/PostItem fallback
+    return NextResponse.json(
+      { ok: true, owner: owner0x, subject: subject0x, name, avatarRef },
+      { headers: { "Cache-Control": "no-store" } }
+    );
+  }
+
+  // No subject provided → keep your original "owner + maybe user" behavior (used on Home)
   let user: `0x${string}` | undefined;
   try {
     const t        = topicVerify(ownerNo0x);
     const reader   = bee.makeFeedReader(t, ownerAddr);
-    const latest   = await reader.downloadPayload();             // payload written by POST "verify"
-
+    const latest   = await reader.downloadPayload();
     if (latest?.payload) {
-      // Decode payload → JSON → { subject?: string }
       const text = latest.payload.toUtf8();
-      const doc   = JSON.parse(text) as { subject?: Hex0x };
-
+      const doc  = JSON.parse(text) as { subject?: Hex0x };
       if (doc.subject && /^0x[0-9a-fA-F]{40}$/.test(doc.subject)) {
         user = doc.subject;
       }
     }
   } catch {
-    // No verify feed yet or unreadable — fine; Home will fall back to owner
+    // no verify feed yet → fine
   }
 
-  return NextResponse.json({ ok: true, owner: owner0x, user });
+  return NextResponse.json(
+    { ok: true, owner: owner0x, user },
+    { headers: { "Cache-Control": "no-store" } }
+  );
 }

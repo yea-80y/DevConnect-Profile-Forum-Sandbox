@@ -10,13 +10,21 @@
 
 import { useEffect, useState } from "react"
 import { useParams } from "next/navigation"
+import { BOARD_ID } from "@/lib/forum/boardID"
 import { Composer } from "@/components/forum/Composer"
 import { PostItem } from "@/components/forum/PostItem"
 import { fetchThread, fetchPostJSON, type CanonicalPost } from "@/lib/forum/client"
+import { useProfile } from "@/lib/profile/context" 
+import { primeAvatarCache, pickAvatarRefFromPayload, pickAvatarRefFromProfile } from "@/lib/avatar"
 
-const BOARD_ID = "devconnect:general"
+// Build a CanonicalPost-shaped stub from a payload (no `any`, zero runtime cost)
+const asCanon = (payload: CanonicalPost["payload"]): CanonicalPost =>
+  ({ payload } as unknown as CanonicalPost)
+
 
 export default function ThreadPage() {
+  const { profile } = useProfile()                  
+  const myAddr = profile?.subject?.toLowerCase()   
   const params = useParams<{ threadRef: string }>()
   const threadRef = params.threadRef?.toLowerCase() ?? ""
 
@@ -55,6 +63,18 @@ export default function ThreadPage() {
     return () => { cancelled = true }
   }, [threadRef])
 
+  useEffect(() => {
+    // pre-warm a handful of authors currently on the board
+    const authors = Array.from(
+      new Set(
+        Object.values(canon)
+          .map((c) => c?.payload?.subject?.toLowerCase())
+          .filter(Boolean) as string[]
+      )
+    )
+    primeAvatarCache(authors.slice(0, 12))
+  }, [canon])
+
   return (
     <main className="mx-auto max-w-3xl px-4 py-4 space-y-6">
       <h1 className="text-lg font-semibold break-all">Thread</h1>
@@ -63,13 +83,38 @@ export default function ThreadPage() {
       <Composer
         boardId={BOARD_ID}
         replyTo={threadRef}
+        // Insert a local reply immediately (postRef will be "local:<uuid>")
+        onOptimistic={({ postRef, payload }) => {
+          setPosts((prev) => [postRef, ...prev])
+          setCanon((p) => ({ ...p, [postRef]: asCanon(payload) }))
+        }}
+        // When server confirms, replace local key with the real postRef and hydrate
         onPosted={(res) => {
-          // Add newest post at the top
-          setPosts((prev) => [res.postRef, ...prev])
-          // Fetch canonical JSON for the new post
+          const localKey = res.clientTag ? `local:${res.clientTag}` : null
+
+          setPosts((prev) => [
+            res.postRef,
+            ...prev.filter((r) => r !== res.postRef && r !== localKey),
+          ])
+
           fetchPostJSON(res.postRef)
-            .then((c) => setCanon((p) => ({ ...p, [res.postRef]: c })))
-            .catch(() => {})
+            .then((c) => {
+              setCanon((p) => {
+                const next = { ...p }
+                if (localKey) delete next[localKey]  // drop the local stub
+                next[res.postRef] = c                // store the real canonical post
+                return next
+              })
+            })
+            .catch(() => {
+              if (localKey) {
+                setCanon((p) => {
+                  const next = { ...p }
+                  delete next[localKey]
+                  return next
+                })
+              }
+            })
         }}
       />
 
@@ -82,13 +127,22 @@ export default function ThreadPage() {
         )}
         {posts.map((ref) => {
           const c = canon[ref]
+          const author = c?.payload.subject ?? ""
+          const authorLc = author.toLowerCase()
+
           return (
             <PostItem
               key={ref}
               refHex={ref}
-              author={c?.payload.subject ?? "(unknown)"}
+              author={author || "(unknown)"}
               displayName={c?.payload.displayName}
-              avatarRef={c?.payload.avatarRef}
+              // snapshot-first; coerce null → undefined to satisfy prop type
+              avatarRef={pickAvatarRefFromPayload(c?.payload) ?? undefined}
+              currentAvatarRef={
+                authorLc && myAddr && authorLc === myAddr
+                  ? (pickAvatarRefFromProfile(profile) ?? null)
+                  : null
+              }
               content={c?.payload.content ?? "(no content)"}
               createdAt={c?.payload.createdAt ?? 0}
             />

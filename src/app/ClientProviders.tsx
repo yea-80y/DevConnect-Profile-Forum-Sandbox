@@ -36,7 +36,7 @@ const LEGACY_PK_KEY = "demo_user_pk";
 const OWNER_CACHE_KEY = "woco.owner0x";
 
 // Keep this in one place; swap to your env/config if needed
-const BEE_URL = "http://bee.swarm.public.dappnode:1633";
+const BEE_URL = "http://localhost:1633";
 
 // Typed shape of /api/profile response (no `any`)
 type ProfileApiOk = { ok: true; owner: `0x${string}` };
