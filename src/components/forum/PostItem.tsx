@@ -4,6 +4,7 @@
 import NextImage from "next/image"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { normRef, getLatestAvatarRefCached } from "@/lib/avatar"
+import ReplyBadge from "@/components/forum/ReplyBadge" 
 
 // Preload & decode an image off-DOM; resolve only when ready to paint.
 function preloadImage(url: string): Promise<void> {
@@ -30,6 +31,8 @@ export function PostItem(props: {
   content: string
   createdAt: number
   currentAvatarRef?: string | null
+  boardId?: string      
+  threadRef?: string
 }) {
   const {
     refHex,
@@ -39,6 +42,8 @@ export function PostItem(props: {
     content,
     createdAt,
     currentAvatarRef = null,
+    boardId,            
+    threadRef,
   } = props
 
   // Start with snapshot; else "current" (if provided); else null.
@@ -161,6 +166,13 @@ export function PostItem(props: {
 
         <div className="text-sm whitespace-pre-wrap mt-1">{content}</div>
         <div className="text-[10px] text-gray-400 break-all mt-2">ref: {refHex}</div>
+
+        {/* replies badge (only when used as a root post on the board) */}
+        {boardId && threadRef && (
+          <div className="mt-2">
+            <ReplyBadge boardId={boardId} threadRef={threadRef} />
+          </div>
+        )}
       </div>
     </div>
   )

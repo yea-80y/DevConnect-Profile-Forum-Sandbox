@@ -141,6 +141,8 @@ export default function BoardPage() {
                 }
                 content={c?.payload.content ?? "(no content)"}
                 createdAt={c?.payload.createdAt ?? 0}
+                boardId={BOARD_ID}   // ← ADD: enables ReplyBadge to know which board
+                threadRef={ref}      // ← ADD: the root post’s ref is the thread id
               />
             </Link>
           )

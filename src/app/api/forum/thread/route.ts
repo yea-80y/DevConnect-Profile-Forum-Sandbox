@@ -63,6 +63,10 @@ export async function GET(req: NextRequest) {
     const boardId = req.nextUrl.searchParams.get("boardId") ?? ""
     const threadRef = (req.nextUrl.searchParams.get("threadRef") ?? "").toLowerCase()
 
+    // ADD: summary params (tiny response for badges / previews)
+    const summary = req.nextUrl.searchParams.get("summary") === "1"
+    const limit = Math.max(0, Number(req.nextUrl.searchParams.get("limit") ?? "2"))
+
     if (!boardId) {
       return NextResponse.json({ ok: false, error: "MISSING_BOARD_ID" }, { status: 400 })
     }
@@ -83,6 +87,14 @@ export async function GET(req: NextRequest) {
 
     // 6) Decode into 64-hex post refs (newest-first)
     const posts = decodeRefs(bytes)
+
+    if (summary) {
+      // Exclude the root threadRef from the count/preview
+      const replies = posts.filter((r) => r !== threadRef)
+      const total = replies.length
+      const latest = limit > 0 ? replies.slice(0, limit) : []
+      return NextResponse.json({ ok: true, boardId, threadRef, total, latest })
+    }
 
     // 7) Respond
     console.log("[api:thread] total ms", Date.now() - t0);
