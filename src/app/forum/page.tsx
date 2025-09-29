@@ -16,6 +16,10 @@ import { PostItem } from "@/components/forum/PostItem"
 import { fetchBoard, fetchPostJSON, type CanonicalPost } from "@/lib/forum/client"
 import { useProfile } from "@/lib/profile/context"
 import { primeAvatarCache, pickAvatarRefFromPayload, pickAvatarRefFromProfile } from "@/lib/avatar"
+import { useMe } from "@/app/ClientProviders"
+import { AdminLoginButton } from "@/components/admin/AdminLoginButton"
+import { AdminLogoutButton } from "@/components/admin/AdminLogoutButton"    
+
 
 // Build a CanonicalPost-shaped stub from a payload (no `any`, zero runtime cost)
 const asCanon = (payload: CanonicalPost["payload"]): CanonicalPost =>
@@ -25,6 +29,7 @@ const asCanon = (payload: CanonicalPost["payload"]): CanonicalPost =>
 export default function BoardPage() {
   const { profile } = useProfile()                  
   const myAddr = profile?.subject?.toLowerCase()
+  // const { isAdmin } = useMe()    // ← MODERATION
   const [threads, setThreads] = useState<string[]>([])
   const [firstPosts, setFirstPosts] = useState<Record<string, CanonicalPost | null>>({})
   const [busy, setBusy] = useState(false)
@@ -38,10 +43,21 @@ export default function BoardPage() {
       try {
         const b = await fetchBoard(BOARD_ID)
         if (cancelled) return
-        setThreads(b.threads)
+
+        // ↓ NEW: fetch muted thread refs and filter
+        const mutedResp = await fetch(
+          `/api/moderation/muted?boardId=${encodeURIComponent(BOARD_ID)}&kind=thread`,
+          { cache: "no-store" }
+        ).then(r => r.json()).catch(() => ({ refs: [] }))
+        const mutedSet = new Set<string>(
+          Array.isArray(mutedResp.refs) ? mutedResp.refs.map((x: string) => x.toLowerCase()) : []
+        )
+
+        const visible = b.threads.filter((r) => !mutedSet.has(r.toLowerCase()))
+        setThreads(visible)
 
         const next: Record<string, CanonicalPost | null> = {}
-        for (const t of b.threads) {
+        for (const t of visible) {
           try {
             next[t] = await fetchPostJSON(t)
           } catch {
@@ -73,7 +89,21 @@ export default function BoardPage() {
   
   return (
     <main className="mx-auto max-w-3xl px-4 py-4 space-y-6">
-      <h1 className="text-lg font-semibold">Forum — {BOARD_ID}</h1>
+      {/* title + admin controls */}
+      <div className="flex items-center justify-between">
+        <h1 className="text-lg font-semibold">Forum — {BOARD_ID}</h1>
+        <div className="flex items-center gap-2">
+          {useMe().isAdmin ? (
+            <>
+              <span className="text-xs rounded bg-gray-200 px-2 py-1">Admin mode</span>
+              {/* logout button */}
+              <AdminLogoutButton />
+            </>
+          ) : (
+            <AdminLoginButton />
+          )}
+        </div>
+      </div>
 
       {/* new thread composer */}
       <Composer
@@ -143,6 +173,7 @@ export default function BoardPage() {
                 createdAt={c?.payload.createdAt ?? 0}
                 boardId={BOARD_ID}   // ← ADD: enables ReplyBadge to know which board
                 threadRef={ref}      // ← ADD: the root post’s ref is the thread id
+                isRoot={true}     // ← ADD: PostItem knows it’s a thread root
               />
             </Link>
           )

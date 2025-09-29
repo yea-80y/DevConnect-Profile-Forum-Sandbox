@@ -1,11 +1,14 @@
+// Client + server both use this Bee URL.
+// In prod, just set NEXT_PUBLIC_BEE_URL=https://your.gateway
 export const BEE_URL =
   process.env.NEXT_PUBLIC_BEE_URL || "http://localhost:1633";
 
+// OK to expose for the prototype; server also reads this.
 export const POSTAGE_BATCH_ID =
   process.env.NEXT_PUBLIC_POSTAGE_BATCH_ID || "";
 
 // Server-only (DO NOT make this NEXT_PUBLIC)
-export const FEED_PRIVATE_KEY = process.env.FEED_PRIVATE_KEY || ""; // can be with or without 0x
+export const FEED_PRIVATE_KEY = process.env.FEED_PRIVATE_KEY || ""; // with or without 0x
 
 // Helpers (server-side only)
 /** Ensure the key is 0x-prefixed and 32 bytes. */

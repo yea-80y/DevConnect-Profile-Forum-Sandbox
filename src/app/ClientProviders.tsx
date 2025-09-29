@@ -3,45 +3,42 @@
 /**
  * ClientProviders
  * ---------------
- * Goal: ultra-lightweight app bootstrap.
- *
- * - Always render immediately (no gating "loading..." screens).
- * - Derive the active subject (user address) from a locally stored private key.
- * - Preload the platform feed owner from localStorage (fast, no flicker),
- *   then refresh it in the background via /api/profile and cache it.
- * - React instantly when:
- *     • the active account changes  → event: "account:changed"
- *     • profile data is updated     → event: "profile:updated"
- * - Force a tiny remount of ProfileProvider on (subject | profileVersion) change
- *   so downstream consumers re-hydrate without manual wiring.
- *
- * Events you should dispatch elsewhere:
- *   window.dispatchEvent(new Event("account:changed"))
- *     → after you set woco.active_pk in /account
- *
- *   window.dispatchEvent(new Event("profile:updated"))
- *     → right after a successful profile save/upload
+ * Existing goals kept exactly the same (subject/feedOwner/profileVersion).
+ * Added: ultra-light Admin context that reads /api/auth/me once on mount
+ * and exposes { isAdmin, address } via useMe().
  */
 
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useEffect, useState, createContext, useContext } from "react";
 import { ProfileProvider } from "@/lib/profile/context";
 
 type HexAddr = `0x${string}` | null;
 
-// LocalStorage keys we already use across screens
+/* ──────────────────────────────────────────────────────────────────────────
+   LocalStorage keys already used across screens
+   ────────────────────────────────────────────────────────────────────────── */
 const ACTIVE_PK_KEY = "woco.active_pk";
 const LEGACY_PK_KEY = "demo_user_pk";
 
-// Cache key for the platform signer (feed owner) so Home/UI can be instant
+/* Cache key for the platform signer (feed owner) so Home/UI can be instant */
 const OWNER_CACHE_KEY = "woco.owner0x";
 
-// Keep this in one place; swap to your env/config if needed
-const BEE_URL = "http://localhost:1633";
+// Read from env; falls back to localhost in dev
+const BEE_URL = process.env.NEXT_PUBLIC_BEE_URL || "http://localhost:1633";
 
-// Typed shape of /api/profile response (no `any`)
+/* Typed shape of /api/profile response (no `any`) */
 type ProfileApiOk = { ok: true; owner: `0x${string}` };
 type ProfileApiErr = { ok: false; error: string };
 type ProfileApi = ProfileApiOk | ProfileApiErr;
+
+/* ──────────────────────────────────────────────────────────────────────────
+   NEW: Admin context to expose { isAdmin, address } to the whole app
+   Use via: const { isAdmin, address } = useMe();
+   ────────────────────────────────────────────────────────────────────────── */
+type AdminMe = { isAdmin: boolean; address: `0x${string}` | null };
+const AdminCtx = createContext<AdminMe>({ isAdmin: false, address: null });
+export function useMe() {
+  return useContext(AdminCtx);
+}
 
 /** Get the currently selected private key from storage (if any). */
 function getActivePk(): `0x${string}` | null {
@@ -66,11 +63,11 @@ export default function ClientProviders({ children }: { children: ReactNode }) {
   // profileVersion: increments whenever a profile is updated (to remount & refresh)
   const [profileVersion, setProfileVersion] = useState(0);
 
+  // NEW: admin state from /api/auth/me (httpOnly cookie backed)
+  const [me, setMe] = useState<AdminMe>({ isAdmin: false, address: null });
+
   /**
    * 1) Subject (user address): derive on mount and whenever the account changes.
-   *    - We listen for:
-   *        - "account:changed" (explicit signal from /account page)
-   *        - (Optionally) "storage" if you change localStorage from another tab
    */
   useEffect(() => {
     let mounted = true;
@@ -108,8 +105,6 @@ export default function ClientProviders({ children }: { children: ReactNode }) {
 
   /**
    * 2) Feed owner (platform signer): use cached value immediately, then refresh.
-   *    - Prevents the “loading platform signer…” flash on Home.
-   *    - After fetching, cache to localStorage for future instant loads.
    */
   useEffect(() => {
     // fast path: preload cached owner for instant UI
@@ -145,8 +140,42 @@ export default function ClientProviders({ children }: { children: ReactNode }) {
   }, []);
 
   /**
-   * 3) When a profile is saved/uploaded elsewhere, bump `profileVersion`.
-   *    The provider gets a new `key`, forcing a tiny remount → fresh read downstream.
+   * 3) Read admin session once on mount, and refresh when:
+   *    - the local account changes  → "account:changed"
+   *    - we explicitly dispatch an event after login/logout  → "admin:changed"
+   */
+  useEffect(() => {
+    let alive = true;
+
+    const loadMe = () =>
+      fetch("/api/auth/me", { cache: "no-store" })
+        .then((r) => r.json())
+        .then((j) => {
+          if (!alive) return;
+          setMe({ isAdmin: !!j.isAdmin, address: j.address ?? null });
+        })
+        .catch(() => {
+          if (!alive) return;
+          setMe({ isAdmin: false, address: null });
+        });
+
+    loadMe(); // initial
+
+    // Re-check admin state when account changes (useful in dev/prototype flows)
+    const onAccountChanged = () => loadMe();
+    const onAdminChanged = () => loadMe(); // call after login/logout
+    window.addEventListener("account:changed", onAccountChanged);
+    window.addEventListener("admin:changed", onAdminChanged);
+
+    return () => {
+      alive = false;
+      window.removeEventListener("account:changed", onAccountChanged);
+      window.removeEventListener("admin:changed", onAdminChanged);
+    };
+  }, []);
+
+  /**
+   * 4) When a profile is saved/uploaded elsewhere, bump `profileVersion`.
    */
   useEffect(() => {
     const onUpdated = () => setProfileVersion((v) => v + 1);
@@ -155,19 +184,21 @@ export default function ClientProviders({ children }: { children: ReactNode }) {
   }, []);
 
   /**
-   * 4) Force a micro-remount of ProfileProvider on account switch or profile update.
-   *    This avoids wiring refresh logic in every consumer component.
+   * 5) Force a micro-remount of ProfileProvider on account switch or profile update.
    */
   const providerKey = `${subject ?? "nosub"}|${profileVersion}`;
 
   return (
-    <ProfileProvider
-      key={providerKey}
-      subject={subject}
-      feedOwner={feedOwner}
-      beeUrl={BEE_URL}
-    >
-      {children}
-    </ProfileProvider>
+    // NEW: wrap the whole app with AdminCtx so components can use useMe()
+    <AdminCtx.Provider value={me}>
+      <ProfileProvider
+        key={providerKey}
+        subject={subject}
+        feedOwner={feedOwner}
+        beeUrl={BEE_URL}
+      >
+        {children}
+      </ProfileProvider>
+    </AdminCtx.Provider>
   );
 }

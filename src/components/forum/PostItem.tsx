@@ -5,6 +5,7 @@ import NextImage from "next/image"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { normRef, getLatestAvatarRefCached } from "@/lib/avatar"
 import ReplyBadge from "@/components/forum/ReplyBadge" 
+import { MuteButton } from "./MuteButton";
 
 // Preload & decode an image off-DOM; resolve only when ready to paint.
 function preloadImage(url: string): Promise<void> {
@@ -26,13 +27,14 @@ function preloadImage(url: string): Promise<void> {
 export function PostItem(props: {
   refHex: string
   author: string
-  displayName?: string
+  displayName?: string | null   // ← widened to also accept null
   avatarRef?: string            // snapshot at time of posting (may be broken/missing)
   content: string
   createdAt: number
   currentAvatarRef?: string | null
-  boardId?: string      
+  boardId?: string
   threadRef?: string
+  isRoot?: boolean              // ← NEW
 }) {
   const {
     refHex,
@@ -42,8 +44,9 @@ export function PostItem(props: {
     content,
     createdAt,
     currentAvatarRef = null,
-    boardId,            
+    boardId,
     threadRef,
+    isRoot = false,             // ← NEW default
   } = props
 
   // Start with snapshot; else "current" (if provided); else null.
@@ -167,10 +170,26 @@ export function PostItem(props: {
         <div className="text-sm whitespace-pre-wrap mt-1">{content}</div>
         <div className="text-[10px] text-gray-400 break-all mt-2">ref: {refHex}</div>
 
-        {/* replies badge (only when used as a root post on the board) */}
-        {boardId && threadRef && (
+        {/* Root post: show reply badge + Mute (as thread) */}
+        {isRoot && boardId && threadRef && (
           <div className="mt-2">
             <ReplyBadge boardId={boardId} threadRef={threadRef} />
+            <MuteButton
+              boardId={boardId}
+              refHex={refHex}
+              kind="thread"
+            />
+          </div>
+        )}
+
+        {/* Replies: no reply badge, but allow Mute (as reply) */}
+        {!isRoot && boardId && (
+          <div className="mt-2">
+            <MuteButton
+              boardId={boardId}
+              refHex={refHex}
+              kind="reply"
+            />
           </div>
         )}
       </div>

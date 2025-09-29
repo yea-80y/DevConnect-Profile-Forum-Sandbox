@@ -16,6 +16,9 @@ import { PostItem } from "@/components/forum/PostItem"
 import { fetchThread, fetchPostJSON, type CanonicalPost } from "@/lib/forum/client"
 import { useProfile } from "@/lib/profile/context" 
 import { primeAvatarCache, pickAvatarRefFromPayload, pickAvatarRefFromProfile } from "@/lib/avatar"
+import { useMe } from "@/app/ClientProviders"
+import { AdminLoginButton } from "@/components/admin/AdminLoginButton"
+
 
 // Build a CanonicalPost-shaped stub from a payload (no `any`, zero runtime cost)
 const asCanon = (payload: CanonicalPost["payload"]): CanonicalPost =>
@@ -24,7 +27,8 @@ const asCanon = (payload: CanonicalPost["payload"]): CanonicalPost =>
 
 export default function ThreadPage() {
   const { profile } = useProfile()                  
-  const myAddr = profile?.subject?.toLowerCase()   
+  const myAddr = profile?.subject?.toLowerCase()
+  const { isAdmin } = useMe()   // ← MODERATION   
   const params = useParams<{ threadRef: string }>()
   const threadRef = params.threadRef?.toLowerCase() ?? ""
 
@@ -42,10 +46,21 @@ export default function ThreadPage() {
       try {
         const t = await fetchThread(BOARD_ID, threadRef)
         if (cancelled) return
-        setPosts(t.posts)
+
+        // ↓ NEW: fetch muted replies and filter
+        const mutedResp = await fetch(
+          `/api/moderation/muted?boardId=${encodeURIComponent(BOARD_ID)}&kind=reply`,
+          { cache: "no-store" }
+        ).then(r => r.json()).catch(() => ({ refs: [] }))
+        const mutedSet = new Set<string>(
+          Array.isArray(mutedResp.refs) ? mutedResp.refs.map((x: string) => x.toLowerCase()) : []
+        )
+
+        const visible = t.posts.filter((r) => !mutedSet.has(r.toLowerCase()))
+        setPosts(visible)
 
         const next: Record<string, CanonicalPost | null> = {}
-        for (const r of t.posts) {
+        for (const r of visible) {
           try {
             next[r] = await fetchPostJSON(r)
           } catch {
@@ -77,7 +92,14 @@ export default function ThreadPage() {
 
   return (
     <main className="mx-auto max-w-3xl px-4 py-4 space-y-6">
-      <h1 className="text-lg font-semibold break-all">Thread</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-lg font-semibold break-all">Thread</h1>
+        {isAdmin ? (
+          <span className="text-xs rounded bg-gray-200 px-2 py-1">Admin mode</span>
+        ) : (
+          <AdminLoginButton />
+        )}
+      </div>
 
       {/* reply composer */}
       <Composer
@@ -145,6 +167,9 @@ export default function ThreadPage() {
               }
               content={c?.payload.content ?? "(no content)"}
               createdAt={c?.payload.createdAt ?? 0}
+              boardId={BOARD_ID}       // ← NEW
+              threadRef={threadRef}    // ← NEW
+              isRoot={false}           // ← NEW (explicit; default is also false)
             />
           )
         })}

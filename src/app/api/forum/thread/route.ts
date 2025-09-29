@@ -63,9 +63,16 @@ export async function GET(req: NextRequest) {
     const boardId = req.nextUrl.searchParams.get("boardId") ?? ""
     const threadRef = (req.nextUrl.searchParams.get("threadRef") ?? "").toLowerCase()
 
-    // ADD: summary params (tiny response for badges / previews)
+    // Summary params (tiny response for badges / previews)
     const summary = req.nextUrl.searchParams.get("summary") === "1"
-    const limit = Math.max(0, Number(req.nextUrl.searchParams.get("limit") ?? "2"))
+
+    // Clamp limit to [1..128], default 1
+    const rawLimit = req.nextUrl.searchParams.get("limit")
+    let limit = 1
+    if (rawLimit != null) {
+      const n = Number(rawLimit)
+      if (Number.isFinite(n)) limit = Math.max(1, Math.min(128, Math.floor(n)))
+    }
 
     if (!boardId) {
       return NextResponse.json({ ok: false, error: "MISSING_BOARD_ID" }, { status: 400 })
@@ -78,11 +85,18 @@ export async function GET(req: NextRequest) {
     // 3) Deterministic topic for this thread
     const topic = topicThread(boardId, threadRef)
 
-    // 4) Read the latest 4096B page
-    const res = await bee.makeFeedReader(topic, owner).downloadPayload()
-
-    // 5) Extract bytes across bee-js payload variants
-    const bytes = extractFeedPayloadBytes(res)
+    // 4) Read the latest 4096B page (404/missing → empty replies instead of 500)
+    let bytes: Uint8Array
+    try {
+      const res = await bee.makeFeedReader(topic, owner).downloadPayload()
+      // 5) Extract bytes across bee-js payload variants
+      bytes = extractFeedPayloadBytes(res)
+    } catch (e) {
+      // Common on a just-created thread: feed not written yet.
+      console.warn("[api:thread] feed missing/not yet created; returning empty replies:", errMsg(e))
+      // zero-filled page decodes to []
+      bytes = new Uint8Array(4096)
+    }
     console.log("[api:thread] feed ms", Date.now() - t0);
 
     // 6) Decode into 64-hex post refs (newest-first)
