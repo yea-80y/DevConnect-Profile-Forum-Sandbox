@@ -11,8 +11,8 @@
  *   When the server confirms, emits onPosted() with the same clientTag so the page can replace.
  */
 
-import { ChangeEvent, useMemo, useState } from "react"
-import { Wallet } from "ethers"
+import { ChangeEvent, useState } from "react"
+import usePostingIdentity from "@/lib/auth/usePostingIdentity"
 import { Button } from "@/components/ui/button"
 import { sha256HexString } from "@/lib/forum/crypto"
 import { submitPost } from "@/lib/forum/client"
@@ -51,9 +51,7 @@ function assertHex0x(v: string): asserts v is `0x${string}` {
   if (!/^0x[0-9a-fA-F]+$/.test(v)) throw new Error("Signature not valid hex (0x…) ")
 }
 
-// LocalStorage keys for the dev wallet private key
-const ACTIVE_PK_KEY = "woco.active_pk"
-const LEGACY_PK_KEY = "demo_user_pk"
+// LocalStorage keys for the dev wallet private key**
 
 // --- component ----------------------------------------------------------------
 
@@ -85,22 +83,41 @@ export function Composer(props: {
   // Snapshot current profile (name + avatarRef) for embedding in payload
   const { profile } = useProfile()
 
-  // Load dev wallet (private key) from localStorage once
-  const wallet = useMemo(() => {
-    try {
-      const pk =
-        (localStorage.getItem(ACTIVE_PK_KEY) ||
-          localStorage.getItem(LEGACY_PK_KEY)) as `0x${string}` | null
-      return pk ? new Wallet(pk) : null
-    } catch {
-      return null
-    }
-  }, [])
+  // Load dev wallet (private key) from localStorage once**
+  // After: const { profile } = useProfile()
+  const id = usePostingIdentity()
+
+  // block until storage & checks are done
+  if (!id.ready) {
+    return (
+      <div className="rounded border p-3 bg-white/90">
+        <div className="text-sm">Loading identity…</div>
+      </div>
+    )
+  }
+
+  // Web3 sessions must have a valid capability
+  if (id.kind === "web3" && id.postAuth === "blocked") {
+    return (
+      <div className="rounded border p-3 bg-white/90 space-y-2">
+        <div className="text-sm font-semibold">Authorize posting</div>
+        <p className="text-sm">
+          You need to authorize a posting key with your wallet before posting.
+        </p>
+        <Button onClick={id.signCapabilityNow}>Authorize (EIP-712)</Button>
+      </div>
+    )
+  }
+  
 
   async function onSubmit() {
     setErr(null)
 
-    if (!wallet) { setErr("No active account. Create/select one on Home/Accounts."); return }
+    if (!id.safe) { setErr("No active posting key. Log in first."); return }
+    if (id.kind === "web3" && id.postAuth !== "parent-bound") {
+      setErr("Wallet is connected but not authorized to post yet.");
+      return;
+    }
     if (!content.trim()) { setErr("Write something first"); return }
 
     setBusy(true) // block double-clicks during preflight
@@ -113,12 +130,17 @@ export function Composer(props: {
     try {
       const t0 = performance.now()
 
+    // Determine the actor (whose profile to resolve); signer remains the safe key
+    const actor = id.kind === "web3" ? id.parent : id.safe
+    if (!actor) { setErr("Missing actor address"); return }
+
+
       // --- Build the SignedPostPayload (fast) ---------------------------------
       const snapshotAvatarRef = pickAvatarRefFromProfile(profile)
       const contentHash = (await sha256HexString(content)) as `0x${string}`
 
       const payload: SignedPostPayload = {
-        subject: wallet.address as `0x${string}`,
+        subject: actor as `0x${string}`,
         boardId,
         threadRef: replyTo ?? undefined,
         content,
@@ -139,7 +161,7 @@ export function Composer(props: {
       })
 
       // --- Sign the payload (dev) ---------------------------------------------
-      const signed = await wallet.signMessage(JSON.stringify(payload))
+      const signed = await id.signPost(JSON.stringify(payload))
       assertHex0x(signed)
       const signature = signed
 
@@ -153,7 +175,10 @@ export function Composer(props: {
       ;(async () => {
         const tNet0 = performance.now()
         try {
-          const res = await submitPost({ payload, signature, signatureType: "eip191" })
+          const res = await submitPost({ 
+            payload, 
+            signature, 
+            signatureType: "eip191" })
           console.log("[compose] /api/forum/post ms", Math.round(performance.now() - tNet0))
 
           // Server confirmed; let the page swap the optimistic row for real ones
@@ -187,7 +212,14 @@ export function Composer(props: {
       />
 
       <div className="flex items-center gap-2">
-        <Button onClick={onSubmit} disabled={busy || !content.trim()}>
+        <Button
+          onClick={onSubmit}
+          disabled={
+            busy ||
+            !content.trim() ||
+            (id.kind === "web3" && id.postAuth !== "parent-bound")
+          }
+        >
           {busy ? "Posting…" : "Post"}
         </Button>
         {err && <span className="text-xs text-red-600">{err}</span>}
