@@ -8,7 +8,7 @@ export default function PostingAuthNudge() {
   const id = usePostingIdentity()
 
   // Render nothing unless we're a web3 session missing capability
-  if (!id.ready || id.kind !== "web3" || id.postAuth === "parent-bound") return null
+  if (!id.ready || id.kind !== "web3" || id.postAuth === "parent-bound" || !id.signCapabilityNow) return null
 
   return (
     <div className="rounded border p-3 bg-amber-50/60 space-y-2">

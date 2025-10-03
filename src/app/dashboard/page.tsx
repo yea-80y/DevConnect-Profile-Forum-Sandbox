@@ -48,6 +48,15 @@ export default function Home() {
     return toHexAddress(chosen); // narrow to `0x${string}` | null
   }, [id.ready, id.kind, id.parent, id.safe]);
 
+  // Only hit the server once auth is truly usable:
+  // - local users: immediately
+  // - web3 users: once the 712 capability is verified (parent-bound)
+  const canFetch =
+    id.ready &&
+    (id.kind === "local" || (id.kind === "web3" && id.postAuth === "parent-bound"));
+
+  // If you want a top-of-page banner while waiting:
+  const authorizing = id.ready && id.kind === "web3" && id.postAuth !== "parent-bound";
 
   // misc
   const [error, setError] = useState<string | null>(null);
@@ -73,20 +82,36 @@ export default function Home() {
    *    We don’t depend on 'user' here; Home shows the SUBJECT we have locally.
    */
   useEffect(() => {
-    fetch("/api/profile")
-      .then((r) => r.json())
-      .then((d: ApiOk | ApiErr) => {
-        if ("ok" in d && d.ok && d.owner) {
-          // d.owner = platform signer 0x... (feed owner)
-          setPlatformOwner(d.owner);
-          try { localStorage.setItem("woco.owner0x", d.owner); } catch {}
-          console.log("[profile] /api/profile owner:", d.owner, "user:", (d as ApiOk).user);
-        } else {
-          setError((d as ApiErr).error || "No platform owner returned");
-        }
-      })
-      .catch((e) => setError(String(e)));
-  }, []);
+  let aborted = false;
+
+  async function load() {
+    if (!canFetch) return; // ⬅️ do nothing until auth is usable
+
+    try {
+      const res = await fetch("/api/profile", {
+        method: "GET",
+        cache: "no-store",
+        credentials: "include",
+        headers: { accept: "application/json" },
+      });
+      const d: ApiOk | ApiErr = await res.json();
+      if (aborted) return;
+
+      if ("ok" in d && d.ok && d.owner) {
+        setPlatformOwner(d.owner);
+        try { localStorage.setItem("woco.owner0x", d.owner); } catch {}
+        console.log("[profile] /api/profile owner:", d.owner, "user:", (d as ApiOk).user);
+      } else {
+        setError((d as ApiErr).error || "No platform owner returned");
+      }
+    } catch (e) {
+      if (!aborted) setError(String(e));
+    }
+  }
+
+  load();
+  return () => { aborted = true; };
+}, [canFetch]); // ⬅️ re-run when auth flips blocked → parent-bound
 
   // React to "account:changed" without a page reload**
 
@@ -105,6 +130,12 @@ export default function Home() {
       </header>
 
       <div className="mx-auto max-w-3xl px-4 py-4 space-y-6">
+        {authorizing && (
+          <div className="rounded-xl border p-3 bg-amber-50/70 text-sm mb-2" aria-live="polite">
+            Authorizing… please confirm in your wallet.
+          </div>
+        )}
+
         {/* Account summary */}
         <section className="rounded-xl bg-white border shadow-sm p-4 space-y-1">
           <div className="text-sm font-semibold">Account</div>
@@ -138,13 +169,11 @@ export default function Home() {
         <section className="rounded-xl bg-white border shadow-sm p-4">
           <div className="mb-3 text-sm font-semibold">My Profile</div>
           {platformOwner && userAddress ? (
-            <ProfileView feedOwner={platformOwner} subject={userAddress} />
+            <ProfileView key={userAddress} feedOwner={platformOwner} subject={userAddress} />
           ) : (
             <div className="text-sm text-gray-500">
-              {error ??
-                (!userAddress
-                  ? "No active user found. Use the Login page to start."
-                  : "Loading platform signer…")}
+              {error ?? (!id.ready ? "Preparing your account…" :
+                (!userAddress ? "No active user found. Use the Login page to start." : "Loading platform signer…"))}
             </div>
           )}
 

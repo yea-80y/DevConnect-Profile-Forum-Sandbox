@@ -42,6 +42,9 @@ import {
 // Ethers v6 — types only (keeps TS happy and tree small)
 import type { Eip1193Provider, TypedDataDomain, TypedDataField } from "ethers";
 
+// Stable host snapshot for this session (includes port in dev)****
+
+
 
 /**
  * Ask the wallet to (re)select accounts, then return the address we should use.
@@ -113,12 +116,34 @@ function makeNonceAndIssuedAt() {
   return { nonce: uuid, issuedAt };
 }
 
-
 // Let TypeScript know MetaMask injects `window.ethereum`
 declare global {
   interface Window {
     ethereum?: Eip1193Provider;
   }
+}
+
+function getHost(): string {
+  return (typeof window !== "undefined" && window.location) ? window.location.host : "";
+}
+
+// One-time redirect to dashboard *from the login route only*.
+// Guarded with sessionStorage so it never double-navigates.
+// One-time redirect to dashboard from the login route only.****
+
+
+// --- ADD: cookie helpers so SSR sees the subject on first dashboard render ---
+function setSubjectCookie(addr: string) {
+  try {
+    const ttl = 60 * 60 * 24 * 30; // 30 days
+    document.cookie = `woco_subject0x=${addr}; Path=/; Max-Age=${ttl}; SameSite=Lax`;
+  } catch {}
+}
+
+function clearSubjectCookie() {
+  try {
+    document.cookie = "woco_subject0x=; Path=/; Max-Age=0; SameSite=Lax";
+  } catch {}
 }
 
 /* ============================
@@ -135,8 +160,8 @@ export interface UsePostingIdentity {
   parent?: string;
   safe?: string;
   capId?: string;
-  startWeb3Login: () => Promise<void>;
-  startLocalLogin: () => Promise<void>;
+  startWeb3Login: () => Promise<boolean>;
+  startLocalLogin: () => Promise<boolean>;
   signCapabilityNow?: () => Promise<void>; // only when kind === "web3"
   rotateSafe: () => Promise<void>;
   logout: () => Promise<void>;
@@ -241,13 +266,11 @@ function openDB(): Promise<IDBDatabase> {
   });
 }
 
-async function putKV<T>(key: string, val: T): Promise<void> {
+async function putKV(key: string, val: unknown): Promise<void> {
   const db = await openDB();
   await new Promise<void>((res, rej) => {
     const tx = db.transaction(OS_KV, "readwrite");
-    // We store arbitrary JSON & CryptoKey via structured clone.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    tx.objectStore(OS_KV).put(val as any, key);
+    tx.objectStore(OS_KV).put(val, key); // no `as any`
     tx.oncomplete = () => res();
     tx.onerror = () => rej(tx.error ?? new Error("IDB put error"));
   });
@@ -292,7 +315,7 @@ async function ensureDeviceKey(): Promise<CryptoKey> {
   const existing = await getKV<CryptoKey>(K_DEVICE_KEY);
   if (existing) return existing;
   const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
-  await putKV<CryptoKey>(K_DEVICE_KEY, key);
+  await putKV(K_DEVICE_KEY, key);
   return key;
 }
 
@@ -499,6 +522,7 @@ export default function usePostingIdentity(): UsePostingIdentity {
         if (savedKind === "local") {
           setKind("local");
           setPostAuth("local-only");
+          try { sessionStorage.setItem("woco.subject0x", wallet.address); } catch {}
           setReady(true);
           return;
         }
@@ -518,16 +542,21 @@ export default function usePostingIdentity(): UsePostingIdentity {
         setKind("web3");
 
         // [PATCH] Verify, then recover the actual signer for display.
-        const ok = verifyCapabilityLocal(bundle, wallet.address, window.location.host);
+        const ok = verifyCapabilityLocal(bundle, wallet.address, getHost());
         setCapId(capabilityId(bundle));
 
         if (ok) {
-          setParent(getAddress(bundle.message.parent)); // ensure checksummed display
-          setPostAuth("parent-bound");
-        } else {
-          setParent(undefined);
-          setPostAuth("blocked");
-        }
+  const parent0x = getAddress(bundle.message.parent);
+    setParent(parent0x);
+    setPostAuth("parent-bound");
+    // seed subject with PARENT
+    try { sessionStorage.setItem("woco.subject0x", parent0x); } catch {}
+    } else {
+    setParent(undefined);
+    setPostAuth("blocked");
+    // clear subject seed if we can't post yet
+    try { sessionStorage.removeItem("woco.subject0x"); } catch {}
+    }
 
         setReady(true);
       } catch (e) {
@@ -558,20 +587,65 @@ export default function usePostingIdentity(): UsePostingIdentity {
 
     postingWalletRef.current = wallet;
     setSafe(wallet.address);
+    // seed subject for first render of /dashboard
+    try { sessionStorage.setItem("woco.subject0x", wallet.address); } catch {}
     setKind("local");
     setParent(undefined);
     setCapId(undefined);
     setPostAuth("local-only");
     setReady(true);
+
+    // ✅ NEW: report success
+    return true;
   }, []);
 
 
  /** Web3 login: require an EIP-712 capability to enable posting. */
 const startWeb3Login = useCallback<UsePostingIdentity["startWeb3Login"]>(async () => {
   // 🚦 Prevent overlapping sign flows (double click / React dev re-render)
-  if (signInFlightRef.current) return;
+  if (signInFlightRef.current) return false;
   signInFlightRef.current = true;
+  
+  // 🔁 EARLY RETURN: if we already have a valid web3 capability, reuse it (don’t rotate the safe)
+  try {
+    const deviceKey = await ensureDeviceKey();
+    const encKS  = await getKV<EncryptedJSON>(K_ENC_KEYSTORE);
+    const encCap = await getKV<EncryptedJSON>(K_ENC_CAP);
+    const savedKind = await getKV<AuthKind>(K_KIND);
 
+    if (savedKind === "web3" && encKS && encCap) {
+      const { keystore } = await decryptJSON<{ keystore: string }>(deviceKey, encKS);
+      const tmpSafe = await Wallet.fromEncryptedJson(keystore, "dummy-pass");
+
+      const { capability, parentSig } =
+        await decryptJSON<{ capability: CapabilityMessage; parentSig: string }>(deviceKey, encCap);
+      const bundle: CapabilityBundle = { message: capability, parentSig };
+
+      const ok = verifyCapabilityLocal(bundle, tmpSafe.address, getHost())
+      if (ok) {
+        postingWalletRef.current = tmpSafe;
+        const parent0x = getAddress(bundle.message.parent);
+        setSafe(tmpSafe.address);
+        setParent(parent0x);
+        setCapId(capabilityId(bundle));
+        setKind("web3");
+        setPostAuth("parent-bound");
+        setReady(true);
+
+        // --- ADD: cookie for SSR ---
+        setSubjectCookie(parent0x);
+        try { sessionStorage.setItem("woco.subject0x", parent0x); } catch {}
+
+
+        signInFlightRef.current = false;
+        return true; // ✅ already good; no new sign needed
+      }
+    }
+  } catch {
+    // ignore and continue to fresh login flow
+  }
+
+  let result = false;
   try {
     // 1) Get provider + user’s chosen parent account
     const eth = window.ethereum as Eip1193WithSelected | undefined;
@@ -581,7 +655,7 @@ const startWeb3Login = useCallback<UsePostingIdentity["startWeb3Login"]>(async (
     // 2) Create a fresh posting key (“safe”) and build the capability message
     const safeWallet = Wallet.createRandom();
     const { nonce, issuedAt } = makeNonceAndIssuedAt();
-    const host = window.location.host;
+    const host = getHost();
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 365).toISOString(); // 1 year
     const safeProof = await safeWallet.signMessage(`${host}:${nonce}`);
 
@@ -598,8 +672,8 @@ const startWeb3Login = useCallback<UsePostingIdentity["startWeb3Login"]>(async (
 
     // 3) Prepare the exact EIP-712 payload (off-chain domain)
     const payload: CapabilityPayload = {
-      domain: CAP_DOMAIN,          // MUST match local verify
-      types: CAP_TYPES_WALLET,     // includes EIP712Domain {name,version} only
+      domain: CAP_DOMAIN,
+      types: CAP_TYPES_WALLET,
       primaryType: "AuthorizeSafeSigner",
       message: capMsg,
     };
@@ -607,15 +681,7 @@ const startWeb3Login = useCallback<UsePostingIdentity["startWeb3Login"]>(async (
     // 4) Ask the wallet to sign (EIP-712 v4)
     const parentSig = await signTypedDataV4(eth, parentAddr, payload);
 
-    // 🔍 DEBUG — prove the 712 is correct BEFORE storage/state
-    console.debug("[712][startWeb3Login] verify check", {
-    recovered: verifyTypedData(CAP_DOMAIN, CAP_TYPES, capMsg, parentSig),
-    selected: parentAddr,
-    hostSigned: capMsg.host,
-    hostNow: window.location.host,
-    });
-
-    // 5) 🔐 Hard-verify BEFORE touching storage/state (catches any mismatch early)
+    // 5) Hard-verify BEFORE touching storage/state
     const recovered = verifyTypedData(CAP_DOMAIN, CAP_TYPES, capMsg, parentSig);
     if (recovered.toLowerCase() !== parentAddr.toLowerCase()) {
       throw new Error(`712 mismatch: recovered ${recovered} vs selected ${parentAddr}`);
@@ -636,17 +702,37 @@ const startWeb3Login = useCallback<UsePostingIdentity["startWeb3Login"]>(async (
     postingWalletRef.current = safeWallet;
     setSafe(safeWallet.address);
     setParent(parentAddr);
+    try { sessionStorage.setItem("woco.subject0x", parentAddr); } catch {}
     setCapId(capabilityId(bundle));
 
-    const ok = verifyCapabilityLocal(bundle, safeWallet.address, host);
-    console.debug("[cap][startWeb3Login] ok?", ok);
+    const ok = verifyCapabilityLocal(bundle, safeWallet.address, getHost());
+
+    // --- ADD: publish subject for SSR before we navigate ---
+    if (ok) {
+      setSubjectCookie(parentAddr);
+      try { sessionStorage.setItem("woco.subject0x", parentAddr); } catch {}
+    }
+    // 🔍 QUICK SANITY LOG
+    console.debug("[login] verify result", {
+    ok,
+    hostSigned: capMsg.host,
+    hostVerify: getHost(),
+    safe: safeWallet.address,
+    parent: parentAddr,
+    });
+
     setKind("web3");
     setPostAuth(ok ? "parent-bound" : "blocked");
     setReady(true);
+
+
+    result = ok;
+  } catch {
+    result = false;
   } finally {
-    // ✅ Always release the guard
     signInFlightRef.current = false;
   }
+  return result; // boolean result your LoginScreen uses
 }, []);
 
   // Re/authorize a capability for the current (or new) safe signer.
@@ -654,6 +740,9 @@ const startWeb3Login = useCallback<UsePostingIdentity["startWeb3Login"]>(async (
 // - Hard-fails if the recovered signer doesn't match the selected account
 const signCapabilityNow = useCallback<NonNullable<UsePostingIdentity["signCapabilityNow"]>>(async () => {
 if (kind !== "web3") return;
+
+// ✅ NEW: if we already have a valid capability, do nothing
+if (postAuth === "parent-bound") return;
 
 // 🚦 Prevent overlap with any other sign flow
 if (signInFlightRef.current) return;
@@ -667,12 +756,21 @@ try {
     // 2) Ask wallet which account to treat as the parent
     const parentAddr = await chooseAccount(eth);
 
-    // 3) Reuse existing safe if available, else create a new one
-    const safeWallet = postingWalletRef.current ?? Wallet.createRandom();
+    // 3) Reuse the existing safe; if not in memory, rehydrate it from storage
+    let safeWallet = postingWalletRef.current;
+    if (!safeWallet) {
+      const deviceKey = await ensureDeviceKey();
+      const encKS = await getKV<EncryptedJSON>(K_ENC_KEYSTORE);
+      if (!encKS) throw new Error("Posting key not found. Please login again.");
+      const { keystore } = await decryptJSON<{ keystore: string }>(deviceKey, encKS);
+      safeWallet = await Wallet.fromEncryptedJson(keystore, "dummy-pass");
+      postingWalletRef.current = safeWallet;
+      setSafe(safeWallet.address);
+    }
 
     // 4) Build capability (fresh nonce, 1y expiry) + safe possession proof
     const { nonce, issuedAt } = makeNonceAndIssuedAt();
-    const host = window.location.host;
+    const host = getHost();
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 365).toISOString();
     const safeProof = await safeWallet.signMessage(`${host}:${nonce}`);
 
@@ -695,7 +793,7 @@ try {
     recovered: verifyTypedData(CAP_DOMAIN, CAP_TYPES, capMsg, parentSig),
     selected: parentAddr,
     hostSigned: capMsg.host,
-    hostNow: window.location.host,
+    hostNow: getHost(),
     });
 
     const recovered = verifyTypedData(CAP_DOMAIN, CAP_TYPES, capMsg, parentSig);
@@ -717,15 +815,24 @@ try {
     postingWalletRef.current = safeWallet;
     setSafe(safeWallet.address);
     setParent(parentAddr);
+    // keep UI in sync with the new parent subject
+    try { sessionStorage.setItem("woco.subject0x", parentAddr); } catch {}
     setCapId(capabilityId(bundle));
 
-    const ok = verifyCapabilityLocal(bundle, safeWallet.address, host);
-    console.debug("[cap][signCapabilityNow] ok?", ok);
+    const ok = verifyCapabilityLocal(bundle, safeWallet.address, getHost());
+    // --- ADD: cookie for SSR ---
+    if (ok) {
+      setSubjectCookie(parentAddr);
+      try { sessionStorage.setItem("woco.subject0x", parentAddr); } catch {}
+    }
+
     setPostAuth(ok ? "parent-bound" : "blocked");
+
+
 } finally {
     signInFlightRef.current = false;
 }
-}, [kind]);
+}, [kind, postAuth]); // ✅ NEW: include postAuth
 
   // Rotate the safe (posting) key.
 // - For local: reuse the local login flow
@@ -755,7 +862,7 @@ const rotateSafe = useCallback<UsePostingIdentity["rotateSafe"]>(async () => {
 
       // 4) Build the capability for the new safe (fresh nonce, 1y expiry) + safe possession proof
       const { nonce, issuedAt } = makeNonceAndIssuedAt();
-      const host = window.location.host;
+      const host = getHost();
       const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 365).toISOString();
       const safeProof = await safeWallet.signMessage(`${host}:${nonce}`);
 
@@ -779,7 +886,7 @@ const rotateSafe = useCallback<UsePostingIdentity["rotateSafe"]>(async () => {
         recovered: verifyTypedData(CAP_DOMAIN, CAP_TYPES, capMsg, parentSig),
         selected: parentAddr,
         hostSigned: capMsg.host,
-        hostNow: window.location.host,
+        hostNow: getHost(),
       });
 
       // 5b) 🔐 Hard-verify BEFORE touching storage/state
@@ -803,10 +910,12 @@ const rotateSafe = useCallback<UsePostingIdentity["rotateSafe"]>(async () => {
       postingWalletRef.current = safeWallet;
       setSafe(safeWallet.address);
       setParent(parentAddr);
+      // keep UI in sync with the new parent subject
+      try { sessionStorage.setItem("woco.subject0x", parentAddr); } catch {}
       setCapId(capabilityId(bundle));
 
       // 8) Gate posting ability based on the new capability
-      const ok = verifyCapabilityLocal(bundle, safeWallet.address, host);
+      const ok = verifyCapabilityLocal(bundle, safeWallet.address, getHost());
       console.debug("[cap][rotateSafe] ok?", ok);
       setPostAuth(ok ? "parent-bound" : "blocked");
       setReady(true);
@@ -822,6 +931,8 @@ const rotateSafe = useCallback<UsePostingIdentity["rotateSafe"]>(async () => {
     await delKV(K_ENC_KEYSTORE);
     await delKV(K_ENC_CAP);
     await delKV(K_KIND);
+    try { sessionStorage.removeItem("woco.subject0x"); } catch {}
+    clearSubjectCookie(); // --- ADD THIS ---
     postingWalletRef.current = null;
     setKind("none");
     setParent(undefined);
