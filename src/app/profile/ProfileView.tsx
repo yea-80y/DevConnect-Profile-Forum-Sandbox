@@ -8,7 +8,7 @@
  */
 
 import Image from "next/image";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { useProfile } from "@/lib/profile/context";
 import { BEE_URL } from "@/config/swarm";
 
@@ -21,24 +21,54 @@ export default function ProfileView(props: {
   const { subject, feedOwner } = props;
   const { profile, ensureFresh } = useProfile();
 
-  const did = useRef(false);
   const ensureFreshRef = useRef(ensureFresh);
   useEffect(() => { ensureFreshRef.current = ensureFresh; }, [ensureFresh]);
 
   // snapshot whether we had a local update at the moment of mount
   const avatarMarkerAtMount = useRef(profile?.avatarMarker);
 
-  // one-time mount effect (empty deps; lint-clean)
-  useEffect(() => {
-    if (did.current) return;
-    did.current = true;
+  // Track whether the <Image> failed to load so we can render a placeholder
+  const [imgError, setImgError] = useState(false);
 
-    // if we just saved locally, don’t immediately fetch and overwrite
-    if (!avatarMarkerAtMount.current) {
-      const t = setTimeout(() => { void ensureFreshRef.current(); }, 400);
+  // Whenever the avatar ref or its cache-busting marker changes, clear error
+  useEffect(() => {
+    setImgError(false);
+  }, [profile?.avatarRef, profile?.avatarMarker]);
+
+
+  // one-time mount effect (empty deps; lint-clean)
+  // Align provider with props whenever subject/owner changes, then refresh.
+  // Ensure we only refresh when the subject/owner pair *actually* changes.
+  // Also, throttle to avoid re-fetch storms in dev/hmr.
+  const lastKeyRef = useRef<string | null>(null);
+  const inFlightRef = useRef(false);
+  const lastRunTsRef = useRef(0);
+
+  useEffect(() => {
+    const key = `${subject ?? "nosub"}|${feedOwner ?? "noown"}`;
+
+    // If unchanged, do nothing.
+    if (lastKeyRef.current === key) return;
+    lastKeyRef.current = key;
+
+    // If we just locally saved an avatar in this mount, skip the auto refresh once.
+    if (avatarMarkerAtMount.current) return;
+
+    // Throttle: don’t run more than once per 1000ms.
+    const now = Date.now();
+    if (now - lastRunTsRef.current < 1000) return;
+    lastRunTsRef.current = now;
+
+    // Skip if a previous refresh is still in flight
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+
+      const t = setTimeout(async () => {
+        try { await ensureFreshRef.current(); } finally { inFlightRef.current = false; }
+      }, 250); // tiny stagger to avoid colliding with parent renders
+
       return () => clearTimeout(t);
-    }
-  }, []);
+    }, [subject, feedOwner]);
 
   const name = profile?.name ?? null;
   const avatarRef = profile?.avatarRef ?? null;
@@ -47,9 +77,16 @@ export default function ProfileView(props: {
   const avatarRefClean = avatarRef ? avatarRef.toLowerCase().replace(/\/+$/, "") : null;
 
   // Build the exact URL once (NO trailing slash before ?)
-  const avatarSrc = avatarRefClean
-    ? `${BEE_URL}/bzz/${avatarRefClean}${profile?.avatarMarker ? `?v=${profile.avatarMarker}` : ""}`
-    : null;
+  // Build a stable URL; only changes when the hash or marker changes
+  const avatarSrc = useMemo(() => {
+    if (!avatarRefClean) return null;
+    const qs = profile?.avatarMarker ? `?v=${profile.avatarMarker}` : "";
+    return `${BEE_URL}/bzz/${avatarRefClean}${qs}`;
+  }, [avatarRefClean, profile?.avatarMarker]);
+
+// (Optional) comment out the noisy log
+// console.debug("[ProfileView] avatarSrc =", avatarSrc);
+
 
   // Helpful breadcrumb so we can see the exact URL the browser will fetch
   console.log("[ProfileView] avatarRef =", avatarRef, "→ avatarSrc =", avatarSrc);
@@ -58,7 +95,7 @@ export default function ProfileView(props: {
   return (
     <div className="flex items-center gap-4">
       {/* Avatar (/bzz/{ref} immutable). Add ?v=avatarMarker to nudge caches after updates */}
-      {avatarSrc ? (
+      {avatarSrc && !imgError ? (
         <Image
           key={`${avatarRefClean}-${profile?.avatarMarker ?? "0"}`}
           src={avatarSrc}
@@ -67,6 +104,7 @@ export default function ProfileView(props: {
           height={80}
           unoptimized
           className="w-20 h-20 rounded-full object-cover border"
+          onError={() => setImgError(true)}   // <-- fallback to placeholder on load error
         />
       ) : (
         <div className="w-20 h-20 rounded-full bg-gray-200 border" />

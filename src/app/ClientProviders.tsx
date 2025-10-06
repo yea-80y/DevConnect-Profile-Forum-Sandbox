@@ -8,16 +8,15 @@
  * and exposes { isAdmin, address } via useMe().
  */
 
-import { ReactNode, useEffect, useState, createContext, useContext } from "react";
+import { ReactNode, useEffect, useState, createContext, useContext, useMemo } from "react";
 import { ProfileProvider } from "@/lib/profile/context";
+import usePostingIdentity from "@/lib/auth/usePostingIdentity";
 
 type HexAddr = `0x${string}` | null;
 
 /* ──────────────────────────────────────────────────────────────────────────
    LocalStorage keys already used across screens
    ────────────────────────────────────────────────────────────────────────── */
-const ACTIVE_PK_KEY = "woco.active_pk";
-const LEGACY_PK_KEY = "demo_user_pk";
 
 /* Cache key for the platform signer (feed owner) so Home/UI can be instant */
 const OWNER_CACHE_KEY = "woco.owner0x";
@@ -40,22 +39,7 @@ export function useMe() {
   return useContext(AdminCtx);
 }
 
-/** Get the currently selected private key from storage (if any). */
-function getActivePk(): `0x${string}` | null {
-  if (typeof window === "undefined") return null;
-  return (localStorage.getItem(ACTIVE_PK_KEY) ||
-    localStorage.getItem(LEGACY_PK_KEY)) as `0x${string}` | null;
-}
-
-/** Lazily derive an address from a private key (keeps bundle tiny). */
-async function pkToAddress(pk: `0x${string}`): Promise<`0x${string}`> {
-  const { Wallet } = await import("ethers"); // v6 — lazy import for speed
-  return new Wallet(pk).address as `0x${string}`;
-}
-
 export default function ClientProviders({ children }: { children: ReactNode }) {
-  // subject: the current user's address (derived from stored PK)
-  const [subject, setSubject] = useState<HexAddr>(null);
 
   // feedOwner: platform signer address (owner of the profile feed)
   const [feedOwner, setFeedOwner] = useState<HexAddr>(null);
@@ -69,110 +53,103 @@ export default function ClientProviders({ children }: { children: ReactNode }) {
   /**
    * 1) Subject (user address): derive on mount and whenever the account changes.
    */
-  useEffect(() => {
-    let mounted = true;
+ // 🔁 Single source of truth for identity
+  const id = usePostingIdentity();
 
-    const derive = async () => {
-      try {
-        const pk = getActivePk();
-        if (!pk) {
-          if (mounted) setSubject(null);
-          return;
-        }
-        const addr = await pkToAddress(pk);
-        if (mounted) setSubject(addr);
-      } catch {
-        if (mounted) setSubject(null);
-      }
-    };
+  // subject: parent (web3) or safe (local) — validated
+  const subject = useMemo<HexAddr>(() => {
+    if (!id.ready) return null;
+    const addr = id.kind === "web3" ? id.parent : id.safe;
+    return addr && /^0x[0-9a-fA-F]{40}$/.test(addr) ? (addr as `0x${string}`) : null;
+  }, [id.ready, id.kind, id.parent, id.safe]);
 
-    derive(); // initial
+  // Bump when auth/account changes so ProfileProvider remounts and re-runs its cold-start refresh
+  // Keep key minimal; remount only when subject or profile version changes
+  const providerKey = `${subject ?? "nosub"}|${profileVersion}`;
 
-    const onAccountChanged = () => derive();
-    window.addEventListener("account:changed", onAccountChanged);
+  // Only pass a real 0x...40 addr to ProfileProvider; otherwise null
+  const validFeedOwner: HexAddr =
+    feedOwner && /^0x[0-9a-fA-F]{40}$/.test(feedOwner) ? feedOwner : null;
 
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === ACTIVE_PK_KEY || e.key === LEGACY_PK_KEY) derive();
-    };
-    window.addEventListener("storage", onStorage);
 
-    return () => {
-      mounted = false;
-      window.removeEventListener("account:changed", onAccountChanged);
-      window.removeEventListener("storage", onStorage);
-    };
-  }, []);
+  // NEW: identityKey changes when auth flips states (e.g. logout -> login same address),
+  // so the provider remounts and re-runs ensureFresh().
+  // Only identity characteristics that actually define "who" the subject is.
+  // Exclude postAuth or any token/nonce that can churn.
+  
+
+  // Keep the key minimal so we don't remount unnecessarily.
+  // Keep key minimal; remount on subject or explicit version bumps
+  
 
   /**
    * 2) Feed owner (platform signer): use cached value immediately, then refresh.
    */
-  useEffect(() => {
-    // fast path: preload cached owner for instant UI
-    try {
-      const cached = localStorage.getItem(OWNER_CACHE_KEY) as `0x${string}` | null;
-      if (cached && cached.startsWith("0x")) setFeedOwner(cached);
-    } catch {
-      /* ignore cache errors */
+ useEffect(() => {
+  // 1) Seed from cache for everyone (local or web3)
+  try {
+    const cached = localStorage.getItem(OWNER_CACHE_KEY) as `0x${string}` | null;
+    if (cached && cached.startsWith("0x")) {
+      setFeedOwner(prev => prev ?? cached);
     }
+  } catch {}
 
-    // background refresh
-    let alive = true;
-    fetch("/api/profile")
-      .then((r) => r.json() as Promise<ProfileApi>)
-      .then((d) => {
-        if (!alive) return;
-        if (d.ok) {
-          setFeedOwner(d.owner);
-          try {
-            localStorage.setItem(OWNER_CACHE_KEY, d.owner);
-          } catch {
-            /* ignore cache errors */
+  // 2) Only platform-backed sessions should call the server for the owner
+  if (!me.isAdmin) return;
+
+  let alive = true;
+  (async () => {
+    try {
+      const r = await fetch("/api/profile", { cache: "no-store", credentials: "same-origin" });
+      const d = (await r.json()) as ProfileApi;
+      if (!alive || !d?.ok || !d.owner?.startsWith?.("0x")) return;
+      setFeedOwner(prev => (prev === d.owner ? prev : d.owner));
+      try { localStorage.setItem(OWNER_CACHE_KEY, d.owner); } catch {}
+    } catch {
+      /* keep cached value */
+    }
+  })();
+
+  return () => { alive = false; };
+}, [me.isAdmin]);
+
+
+    /**
+     * 3) Read admin session once on mount, and refresh when:
+     *    - the local account changes  → "account:changed"
+     *    - we explicitly dispatch an event after login/logout  → "admin:changed"
+     */
+    useEffect(() => {
+      let alive = true;
+      let inFlight = false;
+
+      const fetchMe = async () => {
+        if (inFlight || !alive) return;
+        inFlight = true;
+        try {
+          for (const delay of [0, 200, 500]) {
+            try {
+              if (delay) await new Promise(r => setTimeout(r, delay));
+              const r = await fetch("/api/auth/me", { cache: "no-store" });
+              const j = await r.json();
+              if (!alive) return;
+              setMe({ isAdmin: !!j.isAdmin, address: j.address ?? null });
+              return; // success
+            } catch { /* try next delay */ }
           }
+          if (alive) setMe(prev => prev); // keep previous state on failure
+        } finally {
+          inFlight = false;
         }
-      })
-      .catch(() => {
-        /* ignore network errors; keep cached value */
-      });
+      };
 
-    return () => {
-      alive = false;
-    };
-  }, []);
+      fetchMe();       // on mount
+      if (subject) {   // whenever the subject changes, re-check admin
+        fetchMe();
+      }
 
-  /**
-   * 3) Read admin session once on mount, and refresh when:
-   *    - the local account changes  → "account:changed"
-   *    - we explicitly dispatch an event after login/logout  → "admin:changed"
-   */
-  useEffect(() => {
-    let alive = true;
-
-    const loadMe = () =>
-      fetch("/api/auth/me", { cache: "no-store" })
-        .then((r) => r.json())
-        .then((j) => {
-          if (!alive) return;
-          setMe({ isAdmin: !!j.isAdmin, address: j.address ?? null });
-        })
-        .catch(() => {
-          if (!alive) return;
-          setMe({ isAdmin: false, address: null });
-        });
-
-    loadMe(); // initial
-
-    // Re-check admin state when account changes (useful in dev/prototype flows)
-    const onAccountChanged = () => loadMe();
-    const onAdminChanged = () => loadMe(); // call after login/logout
-    window.addEventListener("account:changed", onAccountChanged);
-    window.addEventListener("admin:changed", onAdminChanged);
-
-    return () => {
-      alive = false;
-      window.removeEventListener("account:changed", onAccountChanged);
-      window.removeEventListener("admin:changed", onAdminChanged);
-    };
-  }, []);
+      return () => { alive = false; };
+    }, [subject]);
 
   /**
    * 4) When a profile is saved/uploaded elsewhere, bump `profileVersion`.
@@ -185,8 +162,7 @@ export default function ClientProviders({ children }: { children: ReactNode }) {
 
   /**
    * 5) Force a micro-remount of ProfileProvider on account switch or profile update.
-   */
-  const providerKey = `${subject ?? "nosub"}|${profileVersion}`;
+   ***/
 
   return (
     // NEW: wrap the whole app with AdminCtx so components can use useMe()
@@ -194,7 +170,7 @@ export default function ClientProviders({ children }: { children: ReactNode }) {
       <ProfileProvider
         key={providerKey}
         subject={subject}
-        feedOwner={feedOwner}
+        feedOwner={validFeedOwner}
         beeUrl={BEE_URL}
       >
         {children}

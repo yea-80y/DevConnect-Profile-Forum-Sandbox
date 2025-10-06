@@ -119,6 +119,7 @@ export function ProfileProvider(props: {
     return () => document.removeEventListener("visibilitychange", onVis);
   }, [subject, feedOwner, ensureFresh]);
 
+
   // 4) Editor calls this after a successful save to update UI instantly (no network call needed).
   const applyLocalUpdate = useCallback((update: Partial<ProfileRenderPack>) => {
     setProfile(prev => {
@@ -131,6 +132,27 @@ export function ProfileProvider(props: {
       return next;
     });
   }, [beeUrl, subject, feedOwner]);
+
+  // Drop stale profile if the (feedOwner, subject) pair changes AFTER first mount.
+  // (We track the previous pair so we don't wipe the initial hydration.)
+  const prevIdsRef = useRef<{subject: Hex0x | null; feedOwner: Hex0x | null}>({
+    subject: null,
+    feedOwner: null,
+  });
+
+  useEffect(() => {
+    const prev = prevIdsRef.current;
+    const changed =
+      prev.subject !== subject || prev.feedOwner !== feedOwner;
+
+    // Only clear if this isn't the first render (prev.subject !== null)
+    if (changed && prev.subject !== null) {
+      setProfile(null);
+      // also allow a fresh pull right away
+      void ensureFresh();
+    }
+    prevIdsRef.current = { subject, feedOwner };
+  }, [subject, feedOwner, ensureFresh]);
 
   const value = useMemo<ProfileCtx>(() => ({
     profile,

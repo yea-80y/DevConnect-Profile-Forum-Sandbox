@@ -8,6 +8,7 @@
 import { Bee, Topic } from "@ethersphere/bee-js";
 import { FEED_NS } from "../swarm-core/topics";
 import type { Hex0x, ProfileRenderPack } from "./types";
+import { pickAvatarRefFromPayload } from "../avatar";
 
 /** small, dependency-free hash of bytes (FNV-1a 32-bit) → hex string */
 function fnv1aHex(bytes: Uint8Array): string {
@@ -92,13 +93,10 @@ export async function refreshProfileFromSwarm(opts: {
 
     if (marker !== prev?.avatarMarker) {
       const obj = tryJson(text);
-      let imageRef: string | undefined;
-      if (obj && typeof obj.imageRef === "string") {
-        imageRef = obj.imageRef;
-      } else if (text && /^[0-9a-f]{64}$/i.test(text)) {
-        imageRef = text;
-      }
-      next.avatarRef = imageRef;
+      const candidate = pickAvatarRefFromPayload(obj ?? text);
+
+      // If extractor yields nothing, keep previous ref (so UI doesn’t flicker to empty)
+      next.avatarRef = candidate ?? prev?.avatarRef;
       next.avatarMarker = marker;
     }
   } catch {

@@ -29,9 +29,13 @@ import { BEE_URL, POSTAGE_BATCH_ID } from "@/config/swarm";
 import ProfileView from "./ProfileView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Wallet } from "ethers"; // ethers v6 (for deriving subject address)
 import { FEED_NS } from "@/lib/swarm-core/topics";
 import { useProfile } from "@/lib/profile/context";
+
+// NEW: source of truth for WHO the user is (subject).
+// - Web3  → parent wallet address (NOT the safe)
+// - Local → main address derived from local PK
+import usePostingIdentity from "@/lib/auth/usePostingIdentity";
 
 function to64Hex(s: string | null | undefined): string {
   if (!s) throw new Error("missing ref")
@@ -46,8 +50,8 @@ type Hex0x = `0x${string}`
 
 /* ------------------------ LocalStorage keys (client) ---------------------- */
 
-const ACTIVE_PK_KEY = "woco.active_pk"; // new key we use in this demo
-const LEGACY_PK_KEY = "demo_user_pk";   // fallback if present in your older flow
+//const ACTIVE_PK_KEY = "woco.active_pk"; // new key we use in this demo
+//const LEGACY_PK_KEY = "demo_user_pk";   // fallback if present in your older flow
 
 /* -------------------------------- API helper ------------------------------ */
 
@@ -89,8 +93,7 @@ export default function ProfileTab() {
   // Platform signer’s feed owner (WITH 0x, returned by the server after each POST)
   const [owner0x, setOwner0x] = useState<Hex0x | null>(null);
 
-  // Active user account (subject) loaded from localStorage (created on the Account/Home screens)
-  const [subject0x, setSubject0x] = useState<Hex0x | null>(null);
+  // Active user account (subject) loaded from localStorage (created on the Account/Home screens)**
 
   // Preload cached platform owner (so the read panel can render immediately)
   useEffect(() => {
@@ -100,54 +103,70 @@ export default function ProfileTab() {
     } catch { /* ignore */ }
   }, []);
 
+  // Force the read panel (<ProfileView key=...>) to remount on profile updates
+  useEffect(() => {
+    const onUpdated = () => setVersion(v => v + 1);
+    window.addEventListener("profile:updated", onUpdated);
+    return () => window.removeEventListener("profile:updated", onUpdated);
+  }, []);
+  
+
   /**
    * Load the active user private key from localStorage and derive address (subject).
    * Keys:
    *  - "woco.active_pk"   → preferred (new)
    *  - "demo_user_pk"     → legacy fallback if present
    */
+  // NEW: use the auth hook for WHO the user is (subject).
+  // - Web3  → parent wallet address (NOT the safe)
+  // - Local → main address derived from local PK
+  const id = usePostingIdentity();
+
+  /**
+   * Subject resolution (single source of truth)
+   * 1) Prefer auth hook subject when ready:
+   *    - Web3: parent wallet address
+   *    - Local: local main address
+   * 2) Fallback for legacy/local-only setups: derive from stored PK.
+   *    (Keeps your older flow working.)
+   */
+  /**
+   * Subject resolution (no fallback)
+   * - Web3 → parent (0x…)
+   * - Local → safe  (0x… your local main addr)
+   * - None → null   (force user prompt to log in / create account)
+   */
+  const subject0x = useMemo<Hex0x | null>(() => {
+    if (!id?.ready) return null;
+    const addr =
+      id.kind === "web3" ? id.parent :
+      id.kind === "local" ? id.safe   :
+      undefined;
+
+    return addr && /^0x[0-9a-fA-F]{40}$/.test(addr) ? (addr as Hex0x) : null;
+  }, [id?.ready, id?.kind, id?.parent, id?.safe]);
+
+
+  // Keep the current subject visible to the provider (and listeners)
   useEffect(() => {
+    // only once auth has hydrated
+    if (!id?.ready) return;
+
     try {
-      const pk =
-        (typeof window !== "undefined" &&
-          (localStorage.getItem(ACTIVE_PK_KEY) || localStorage.getItem(LEGACY_PK_KEY))) as `0x${string}` | null;
+      if (subject0x) {
+        // some providers read this on mount to know "which profile" they manage
+        localStorage.setItem("woco.subject0x", subject0x);
 
-      if (!pk) {
-        setSubject0x(null);
-        return;
+        // (optional but helpful) notify any listeners that the account changed
+        // many flows used to listen to this to re-hydrate
+        window.dispatchEvent(new Event("account:changed"));
+      } else {
+        localStorage.removeItem("woco.subject0x");
+        window.dispatchEvent(new Event("account:changed"));
       }
+    } catch { /* ignore */ }
+  }, [id?.ready, subject0x]);
 
-      // Derive 0x address from private key (ethers v6)
-      const w = new Wallet(pk);
-      const addr = w.address as Hex0x;
-      setSubject0x(addr);
-    } catch {
-      setSubject0x(null);
-    }
-  }, []);
-
-  // React to account switches without a reload
-  useEffect(() => {
-    const onAcct = () => {
-      try {
-        const pk =
-          (localStorage.getItem("woco.active_pk") ||
-          localStorage.getItem("demo_user_pk")) as `0x${string}` | null;
-        if (!pk) { setSubject0x(null); return; }
-        const w = new Wallet(pk);
-        setSubject0x(w.address as Hex0x);
-      } catch { /* ignore */ }
-    };
-    window.addEventListener("account:changed", onAcct);
-    return () => window.removeEventListener("account:changed", onAcct);
-  }, []);
-
-  // ⬇️ ADD THIS EFFECT (forces the read panel to remount after a save)
-  useEffect(() => {
-    const onUpdated = () => setVersion((v) => v + 1);
-    window.addEventListener("profile:updated", onUpdated);
-    return () => window.removeEventListener("profile:updated", onUpdated);
-  }, []);
 
   // Avatar preview when user picks a file
   function onPickFile(e: ChangeEvent<HTMLInputElement>) {
@@ -170,14 +189,19 @@ export default function ProfileTab() {
       if (!POSTAGE_BATCH_ID) throw new Error("Set NEXT_PUBLIC_POSTAGE_BATCH_ID in .env.local");
       if (!subject0x) throw new Error("No active account – create/select one on the Accounts/Home screen first.");
 
+      // Compute once, reuse in both blocks (name + avatar)
+      const subjectNo0x = subject0x.slice(2).toLowerCase();
+
       // (1) Save display name (optional) → topic keyed by subject
-const nameToSave = displayName.trim();
-if (nameToSave) {
-  const { owner } = await postProfile({
-    kind: "name",
-    payload: { name: nameToSave, subject: subject0x }
-  });
-  setOwner0x(owner);
+      const nameToSave = displayName.trim();
+      if (nameToSave) {
+        const { owner } = await postProfile({
+          kind: "name",
+          payload: { name: nameToSave, subject: subject0x }
+        });
+        setOwner0x(owner);
+        // NEW: persist owner so ProfileProvider can see it on mount
+        try { localStorage.setItem("woco.owner0x", owner); } catch {}
 
       // 1) Update in-state profile immediately (no extra network read)
       applyLocalUpdate({ name: nameToSave });
@@ -205,7 +229,6 @@ if (nameToSave) {
       setTimeout(() => { void ensureFresh(); }, 3000);
 
       // DEBUG: feed GET for the name (topic derived from SUBJECT)
-      const subjectNo0x = subject0x.slice(2).toLowerCase();
       const topicStr = `${FEED_NS}/name/${subjectNo0x}`;
       const topicHex = Topic.fromString(topicStr).toString();
       console.log("[profile] name saved via platform signer", {
@@ -234,6 +257,8 @@ if (nameToSave) {
           payload: { imageRef: cleanRef, subject: subject0x }
         });
         setOwner0x(owner);
+        // NEW
+        try { localStorage.setItem("woco.owner0x", owner); } catch {}
 
         // 1) Switch UI to the new ref immediately (no extra read)
         applyLocalUpdate({ avatarRef: cleanRef, avatarMarker: Date.now().toString(16) });
@@ -256,7 +281,6 @@ if (nameToSave) {
         setTimeout(() => { void ensureFresh(); }, 3000);
 
         // DEBUG: feed GET for the avatar (topic derived from SUBJECT)
-        const subjectNo0x = subject0x.slice(2).toLowerCase();
         const topicStr = `${FEED_NS}/avatar/${subjectNo0x}`;
         const topicHex = Topic.fromString(topicStr).toString();
         console.log("[profile] avatar feed updated via platform signer", {
@@ -319,13 +343,24 @@ if (nameToSave) {
           </div>
 
           <div className="flex items-center gap-2">
-            <Button type="submit" disabled={busy}>
+            <Button type="submit" disabled={busy || !subject0x}>
               {busy ? "Saving…" : "Save"}
             </Button>
 
             {saved && <span className="text-green-600 text-sm">Saved ✔</span>}
             {err && <span className="text-red-600 text-sm">Error: {err}</span>}
           </div>
+          {!id?.ready && (
+          <div className="text-sm text-gray-500">Checking your account…</div>
+        )}
+
+        {id?.ready && !subject0x && (
+          <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 text-amber-800 p-3 text-sm">
+            No active account. Please{" "}
+            <a href="/accounts" className="underline">open Accounts</a>{" "}
+            to sign in (Web3) or create a local account.
+          </div>
+        )}
         </form>
       </div>
 
