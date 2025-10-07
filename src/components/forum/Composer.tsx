@@ -175,10 +175,20 @@ export function Composer(props: {
       ;(async () => {
         const tNet0 = performance.now()
         try {
-          const res = await submitPost({ 
-            payload, 
-            signature, 
-            signatureType: "eip191" })
+          const extraHeaders =
+            id.kind === "web3"
+              ? {
+                  "x-posting-kind": "web3",
+                  "x-posting-parent": id.parent!,   // 0x...
+                  "x-posting-key": id.safe!,        // posting key (signer)
+                  "x-posting-auth": "parent-bound", // you already gate the button on this
+                }
+              : undefined;
+
+          const res = await submitPost(
+            { payload, signature, signatureType: "eip191" },
+            extraHeaders
+          );
           console.log("[compose] /api/forum/post ms", Math.round(performance.now() - tNet0))
 
           // Server confirmed; let the page swap the optimistic row for real ones

@@ -96,16 +96,22 @@ function extractError(x: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
 }
 
-export async function submitPost(body: {
-  payload: SignedPostPayload;
-  signature: `0x${string}`;
-  signatureType: SignatureType;
-}) {
+export async function submitPost(
+  body: {
+    payload: SignedPostPayload;
+    signature: `0x${string}`;
+    signatureType: SignatureType;
+  },
+  extraHeaders?: Record<string, string> // ← NEW
+) {
   const t0 = performance.now(); // start timing the network round trip
 
   const r = await fetch("/api/forum/post", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(extraHeaders ?? {}), // ← NEW: merge web3 headers when provided
+    },
     body: JSON.stringify(body),
   });
 
@@ -136,3 +142,4 @@ export async function submitPost(body: {
   console.log("[client] /api/forum/post ok ms", dt);
   return j; // `j` is narrowed to PostOk here
 }
+
