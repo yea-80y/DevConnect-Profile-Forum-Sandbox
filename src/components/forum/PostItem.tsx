@@ -35,6 +35,10 @@ export function PostItem(props: {
   boardId?: string
   threadRef?: string
   isRoot?: boolean              // ← NEW
+  /** Called after a thread root is successfully muted (lets parent prune immediately). */
+  onMutedThread?: () => void
+  /** Called after a reply is successfully muted (for thread pages, if used). */
+  onMutedReply?: () => void
 }) {
   const {
     refHex,
@@ -47,6 +51,8 @@ export function PostItem(props: {
     boardId,
     threadRef,
     isRoot = false,             // ← NEW default
+    onMutedThread,
+    onMutedReply,
   } = props
 
   // Start with snapshot; else "current" (if provided); else null.
@@ -178,6 +184,7 @@ export function PostItem(props: {
               boardId={boardId}
               refHex={refHex}
               kind="thread"
+              onMuted={onMutedThread}  // ✅ forward to parent
             />
           </div>
         )}
@@ -189,6 +196,7 @@ export function PostItem(props: {
               boardId={boardId}
               refHex={refHex}
               kind="reply"
+              onMuted={onMutedReply}   // ✅ forward to parent (used on thread page)
             />
           </div>
         )}

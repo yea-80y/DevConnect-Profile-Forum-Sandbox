@@ -1,84 +1,80 @@
-// Appends a ref to the muted list on Swarm (admin-only)
-// Uses your existing admin session cookie (HMAC) set by /api/auth/login
+// src/app/api/moderation/mute/route.ts
+// ------------------------------------------------------------------
+// MUTE (admin-only)
+// - Authorize with: allowlist AND dc_admin cookie (set by /api/auth/admin/elevate)
+// - Parent/web3 address comes from "woco_subject0x" (set by your login hook)
+// - Body: { boardId: string, kind: "thread"|"reply", ref: string } (64-hex; 0x ok)
+// ------------------------------------------------------------------
 
-import { NextResponse } from "next/server"
-import { cookies } from "next/headers"
-import { addMuted } from "@/lib/moderation/store-swarm"
-import { getAddress } from "ethers"
-import { createHmac, timingSafeEqual } from "crypto"
+import { NextRequest, NextResponse } from "next/server";
+import { addMuted } from "@/lib/moderation/store-swarm";
 
-export const runtime = "nodejs"
+export const runtime = "nodejs";
 
-// --- ADMIN allowlist (addresses lowercased) -------------------------------
+// Allowlist from env
 const ADMIN_ADDRESSES = (process.env.ADMIN_ADDRESSES ?? "")
   .split(",")
-  .map(s => s.trim().toLowerCase())
-  .filter(Boolean)
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
 
-// --- tiny copy of your HMAC session verify (kept local to avoid new deps) ---
-const SESSION_SECRET = process.env.SESSION_SECRET || "dev-secret-change-me"
+// Cookie names used project-wide
+const SUBJECT_COOKIE = "woco_subject0x"; // client-set after initial EIP-712
+const ADMIN_FLAG_COOKIE = "dc_admin";    // httpOnly; set by elevate
 
-function b64url(buf: Buffer): string {
-  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "")
-}
-function fromB64url(s: string): Buffer {
-  const pad = 4 - (s.length % 4 || 4)
-  const base64 = s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat(pad)
-  return Buffer.from(base64, "base64")
-}
-function signSession(payload: string): string {
-  const mac = createHmac("sha256", SESSION_SECRET).update(payload).digest()
-  return b64url(mac)
-}
-function verifySessionToken(token: string): { address: string } | null {
-  const parts = token.split(".")
-  if (parts.length !== 3) return null
-  const [addr, expStr, sig] = parts
-  const exp = Number(expStr)
-  if (!Number.isFinite(exp) || exp < Math.floor(Date.now() / 1000)) return null
-  const payload = `${addr}.${expStr}`
-  const expected = fromB64url(signSession(payload))
-  const got = fromB64url(sig)
-  if (expected.length !== got.length) return null
-  if (!timingSafeEqual(expected, got)) return null
-  try { return { address: getAddress(addr) } } catch { return null }
-}
-// ---------------------------------------------------------------------------
+type Kind = "thread" | "reply";
+type MuteBody = { boardId?: string; kind?: Kind; ref?: string; refHex?: string };
 
+// Simple hex check (accepts with or without 0x)
 function isHex64(x: string): boolean {
-  return /^[0-9a-fA-F]{64}$/.test(x.startsWith("0x") ? x.slice(2) : x)
+  const s = x.startsWith("0x") ? x.slice(2) : x;
+  return /^[0-9a-fA-F]{64}$/.test(s);
 }
 
-/** POST /api/moderation/mute
- * body: { boardId: string, ref: string (64-hex), kind: "thread"|"reply" }
- */
-export async function POST(req: Request) {
-  // 1) require a valid admin session
-  const jar = await cookies()
-  const token = jar.get("dc_admin_session")?.value
-  const parsed = token ? verifySessionToken(token) : null
-  if (!parsed) {
-    return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 })
-  }
+function readParent(req: NextRequest): `0x${string}` | null {
+  const v = req.cookies.get(SUBJECT_COOKIE)?.value;
+  return v && /^0x[0-9a-fA-F]{40}$/.test(v) ? (v as `0x${string}`) : null;
+}
 
-  // 1b) require the signer to be in the ADMIN allowlist
-  const isAdmin = ADMIN_ADDRESSES.includes(parsed.address.toLowerCase())
-  if (!isAdmin) {
-    return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 })
-  }
+function isAdmin(req: NextRequest, parent: `0x${string}` | null): boolean {
+  if (!parent) return false;
+  const onAllowlist = ADMIN_ADDRESSES.includes(parent.toLowerCase());
+  const hasFlag = req.cookies.get(ADMIN_FLAG_COOKIE)?.value === "1";
+  return onAllowlist && hasFlag; // ← explicit elevate required
+}
 
-  // 2) validate input
-  const { boardId, ref, kind } = await req.json() as {
-    boardId?: string
-    ref?: string
-    kind?: "thread" | "reply"
-  }
-  if (!boardId || !ref || (kind !== "thread" && kind !== "reply") || !isHex64(ref)) {
-    return NextResponse.json({ ok: false, error: "Bad input" }, { status: 400 })
-  }
+export async function POST(req: NextRequest) {
+  try {
+    // 1) Parse & validate input
+    const body = (await req.json()) as MuteBody;
+    const boardId = body?.boardId?.trim();
+    const ref = (body?.ref ?? body?.refHex)?.trim();
+    const kind = body?.kind;
 
-  // 3) append ref to the Swarm moderation feed (idempotent; 128-cap handled inside)
-  await addMuted(boardId, kind, ref)
+    if (!boardId || !ref || (kind !== "thread" && kind !== "reply") || !isHex64(ref)) {
+      return NextResponse.json(
+        { ok: false, error: "Bad input (boardId/kind/ref)" },
+        { status: 400 }
+      );
+    }
 
-  return NextResponse.json({ ok: true })
+    // Normalize ref (strip 0x for storage consistency)
+    const cleanRef = ref.startsWith("0x") ? ref.slice(2) : ref;
+
+    // 2) Authorize: allowlist + dc_admin flag
+    const parent = readParent(req);
+    if (!isAdmin(req, parent)) {
+      return NextResponse.json(
+        { ok: false, error: "Not authorized (admin required)" },
+        { status: 403 }
+      );
+    }
+
+    // 3) Persist mute (idempotency handled inside your store)
+    await addMuted(boardId, kind, cleanRef);
+
+    return NextResponse.json({ ok: true });
+  } catch (e) {
+    console.error("mute error:", e);
+    return NextResponse.json({ ok: false, error: "Server error" }, { status: 500 });
+  }
 }
