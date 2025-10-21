@@ -1,36 +1,101 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# DevConnect Profile + Forum Sandbox
 
-## Getting Started
+A proof-of-concept app demonstrating **Swarm-hosted user profiles** and a **decentralised message board**.
+It shows how to use Swarm (Bee), Swarm Feeds, and EIP-712/EIP-191 signatures to create user-owned identities
+and cryptographically verified posts.
 
-First, run the development server:
+> **Project status:** pre-launch / work-in-progress. Deployment instructions and URLs will be added once live.
+
+---
+
+## Quick Start
+
+### 1) Install
 
 ```bash
+git clone https://github.com/yea-80y/DevConnect-Profile-Forum-Sandbox.git
+cd DevConnect-Profile-Forum-Sandbox
+npm install
+2) Configure environment
+Create a .env.local in the project root:
+
+ini
+Copy code
+# Bee / Swarm
+BEE_URL=http://localhost:1633             # Server-side Bee URL
+NEXT_PUBLIC_BEE_URL=http://localhost:1633 # Client-side Bee URL (exposed to the browser)
+
+# Postage / Feeds (server)
+POSTAGE_BATCH_ID=YOUR_POSTAGE_BATCH_ID    # Required for uploads/feed writes
+FEED_PRIVATE_KEY=0xabc123...              # Platform feed signer (hex private key)
+
+# Optional / nice-to-have
+ENS_DOMAIN=your-site.eth.limo             # Only used for display / future deploy docs
+NODE_ENV=development
+What these do:
+
+BEE_URL — where the server API writes/reads (your Bee node or trusted gateway).
+
+NEXT_PUBLIC_BEE_URL — what the browser uses for GETs (profiles, posts, avatars).
+
+POSTAGE_BATCH_ID — a valid postage stamp batch for writing bytes/feeds.
+
+FEED_PRIVATE_KEY — the platform signer that publishes deterministic feeds.
+
+ENS_DOMAIN — optional; add when you’ve pointed ENS to a Swarm hash.
+
+Keep .env.local out of version control.
+
+3) Run
+bash
+Copy code
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+# open http://localhost:3000
+Project Structure
+graphql
+Copy code
+src/
+├─ app/
+│  ├─ api/                 # Server API routes (profile, forum, moderation)
+│  ├─ dashboard/           # Home/Dashboard
+│  ├─ forum/               # Board + Thread pages
+│  └─ profile/             # Profile UI (edit/view)
+├─ components/             # Reusable UI (Composer, PostItem, etc.)
+├─ lib/
+│  ├─ auth/                # EIP-712/EIP-191 login + posting identity
+│  ├─ forum/               # topics, publisher, pack, client helpers
+│  └─ profile/             # context, service, storage, swarm helpers
+└─ config/                 # centralised config (e.g., Bee URLs)
+docs/
+├─ System-Components.pdf
+└─ Forum-Architecture.pdf
+How it works (high level)
+Reads (GET): the browser fetches directly from Bee (/feeds, /bytes, /bzz) to display
+profiles, posts, avatars — no database involved.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Writes (POST): the server API (with the platform signer + postage batch) uploads immutable
+JSON blobs and advances Swarm feeds (board indexes, threads, profile feeds).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Login / Auth: Web3 users sign an EIP-712 capability; posts are signed with EIP-191.
+The client verifies before sending, and the server re-verifies before publishing.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Local Development Notes
+You’ll need a reachable Bee node or gateway and a valid postage batch.
 
-## Learn More
+For moderation and posting, the server must have FEED_PRIVATE_KEY and POSTAGE_BATCH_ID.
 
-To learn more about Next.js, take a look at the following resources:
+Client fetches rely on NEXT_PUBLIC_BEE_URL. If you swap to a public gateway later, update it here.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Docs
+System Components – overall architecture and deployment shape:
+docs/System-Components.pdf
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Forum Architecture & Flows – login, profiles, posting, replies:
+docs/Forum-Architecture.pdf
 
-## Deploy on Vercel
+Roadmap (short)
+ Public deployment docs (Bee/gateway, postage management, CORS)
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+ Optional: user-provided postage batch flow
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+ Production hardening (rate limits, input caps, anti-spam)
