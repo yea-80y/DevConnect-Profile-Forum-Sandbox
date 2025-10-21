@@ -115,9 +115,11 @@ export default function ClientProviders({ children }: { children: ReactNode }) {
 
 
     /**
-     * 3) Read admin session once on mount, and refresh when:
-     *    - the local account changes  → "account:changed"
-     *    - we explicitly dispatch an event after login/logout  → "admin:changed"
+     * 3) Read admin session and keep it fresh.
+     *    Triggers:
+     *      - on mount
+     *      - when the account/subject changes
+     *      - when "admin:changed" is dispatched (after elevate or admin logout)
      */
     useEffect(() => {
       let alive = true;
@@ -127,29 +129,43 @@ export default function ClientProviders({ children }: { children: ReactNode }) {
         if (inFlight || !alive) return;
         inFlight = true;
         try {
-          for (const delay of [0, 200, 500]) {
+          // small retry window to smooth out cookie set/clear races
+          for (const delay of [0, 150, 400]) {
             try {
               if (delay) await new Promise(r => setTimeout(r, delay));
-              const r = await fetch("/api/auth/me", { cache: "no-store" });
-              const j = await r.json();
+              const r = await fetch("/api/auth/me", {
+                credentials: "include", // ← send & read cookies
+                cache: "no-store",      // ← avoid stale cached responses
+              });
+              const j = await r.json().catch(() => ({}));
               if (!alive) return;
-              setMe({ isAdmin: !!j.isAdmin, address: j.address ?? null });
+              setMe({
+                isAdmin: !!j?.isAdmin,
+                address: j?.address ?? null,
+              });
               return; // success
-            } catch { /* try next delay */ }
+            } catch {
+              // try next delay
+            }
           }
-          if (alive) setMe(prev => prev); // keep previous state on failure
         } finally {
           inFlight = false;
         }
       };
 
-      fetchMe();       // on mount
-      if (subject) {   // whenever the subject changes, re-check admin
-        fetchMe();
-      }
+      // initial fetch + whenever subject changes
+      fetchMe();
+      if (subject) fetchMe();
 
-      return () => { alive = false; };
-    }, [subject]);
+    // listen for "admin:changed" (emitted by sign-in/out buttons) and refetch
+    const onAdminChanged = () => fetchMe();
+    window.addEventListener("admin:changed", onAdminChanged);
+
+    return () => {
+      alive = false;
+      window.removeEventListener("admin:changed", onAdminChanged);
+    };
+  }, [subject]);
 
   /**
    * 4) When a profile is saved/uploaded elsewhere, bump `profileVersion`.

@@ -27,9 +27,12 @@ const asCanon = (payload: CanonicalPost["payload"]): CanonicalPost =>
 
 
 export default function BoardPage() {
-  const { profile } = useProfile()                  
+  const { profile } = useProfile()
   const myAddr = profile?.subject?.toLowerCase()
-  // const { isAdmin } = useMe()    // ← MODERATION
+
+  // MODERATION: read admin state ONCE at the top (rules of hooks)
+  const { isAdmin } = useMe()
+
   const [threads, setThreads] = useState<string[]>([])
   const [firstPosts, setFirstPosts] = useState<Record<string, CanonicalPost | null>>({})
   const [busy, setBusy] = useState(false)
@@ -93,10 +96,9 @@ export default function BoardPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Forum — {BOARD_ID}</h1>
         <div className="flex items-center gap-2">
-          {useMe().isAdmin ? (
+          {isAdmin ? (
             <>
               <span className="text-xs rounded bg-gray-200 px-2 py-1">Admin mode</span>
-              {/* logout button */}
               <AdminLogoutButton />
             </>
           ) : (
@@ -153,7 +155,7 @@ export default function BoardPage() {
         )}
         {threads.map((ref) => {
           const c = firstPosts[ref]
-          const author = c?.payload.subject ?? ""         // ⬅️ normalize author
+          const author = c?.payload.subject ?? ""
           const authorLc = author.toLowerCase()
 
           return (
@@ -162,7 +164,6 @@ export default function BoardPage() {
                 refHex={ref}
                 author={c?.payload.subject ?? "(unknown)"}
                 displayName={c?.payload.displayName}
-                // snapshot-first; handle older shapes; null → undefined
                 avatarRef={pickAvatarRefFromPayload(c?.payload) ?? undefined}
                 currentAvatarRef={
                   authorLc && myAddr && authorLc === myAddr
@@ -171,9 +172,18 @@ export default function BoardPage() {
                 }
                 content={c?.payload.content ?? "(no content)"}
                 createdAt={c?.payload.createdAt ?? 0}
-                boardId={BOARD_ID}   // ← ADD: enables ReplyBadge to know which board
-                threadRef={ref}      // ← ADD: the root post’s ref is the thread id
-                isRoot={true}     // ← ADD: PostItem knows it’s a thread root
+                boardId={BOARD_ID}
+                threadRef={ref}
+                isRoot={true}
+                // ✅ immediately remove from local state after mute success
+                onMutedThread={() => {
+                  setThreads((prev) => prev.filter((r) => r !== ref));
+                  setFirstPosts((prev) => {
+                    const next = { ...prev };
+                    delete next[ref];
+                    return next;
+                  });
+                }}
               />
             </Link>
           )
