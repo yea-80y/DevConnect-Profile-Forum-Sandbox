@@ -1,101 +1,125 @@
 # DevConnect Profile + Forum Sandbox
 
-A proof-of-concept app demonstrating **Swarm-hosted user profiles** and a **decentralised message board**.
-It shows how to use Swarm (Bee), Swarm Feeds, and EIP-712/EIP-191 signatures to create user-owned identities
-and cryptographically verified posts.
+A proof-of-concept application demonstrating **Swarm-hosted user profiles** and a **decentralised message board**.
 
-> **Project status:** pre-launch / work-in-progress. Deployment instructions and URLs will be added once live.
+It shows how to use [Swarm](https://docs.ethswarm.org/) (Bee), Swarm Feeds, and EIP-712/EIP-191 signatures to create user-owned identities and cryptographically verified posts — all without a traditional backend database.
+
+> **Status:** Work-in-progress / pre-launch. Deployment details and live URLs will be added once available.
 
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
-### 1) Install
+### 1. Clone and install
 
 ```bash
 git clone https://github.com/yea-80y/DevConnect-Profile-Forum-Sandbox.git
 cd DevConnect-Profile-Forum-Sandbox
 npm install
-2) Configure environment
-Create a .env.local in the project root:
+2. Create a local environment file
+Create a file named .env.local in the project root with the following variables:
 
-ini
+env
 Copy code
-# Bee / Swarm
-BEE_URL=http://localhost:1633             # Server-side Bee URL
-NEXT_PUBLIC_BEE_URL=http://localhost:1633 # Client-side Bee URL (exposed to the browser)
+# Bee / Swarm node configuration
+BEE_URL=http://localhost:1633              # Server-side Bee URL
+NEXT_PUBLIC_BEE_URL=http://localhost:1633  # Client-side Bee URL (exposed to the browser)
 
-# Postage / Feeds (server)
-POSTAGE_BATCH_ID=YOUR_POSTAGE_BATCH_ID    # Required for uploads/feed writes
-FEED_PRIVATE_KEY=0xabc123...              # Platform feed signer (hex private key)
+# Postage and feeds (server-side)
+POSTAGE_BATCH_ID=your_postage_batch_id     # Required for uploads/feed writes
+FEED_PRIVATE_KEY=0xabc123...               # Platform feed signer (hex private key)
 
-# Optional / nice-to-have
-ENS_DOMAIN=your-site.eth.limo             # Only used for display / future deploy docs
+# Optional values
+ENS_DOMAIN=your-site.eth.limo              # Optional: ENS domain (for future deployment)
 NODE_ENV=development
-What these do:
+Explanation of required values:
 
-BEE_URL — where the server API writes/reads (your Bee node or trusted gateway).
+BEE_URL – URL of your Bee node or trusted gateway used by the server.
 
-NEXT_PUBLIC_BEE_URL — what the browser uses for GETs (profiles, posts, avatars).
+NEXT_PUBLIC_BEE_URL – Bee URL exposed to the browser for GET requests.
 
-POSTAGE_BATCH_ID — a valid postage stamp batch for writing bytes/feeds.
+POSTAGE_BATCH_ID – A valid postage stamp batch for uploads and feed writes.
 
-FEED_PRIVATE_KEY — the platform signer that publishes deterministic feeds.
+FEED_PRIVATE_KEY – Private key of the platform signer account (signs feeds).
 
-ENS_DOMAIN — optional; add when you’ve pointed ENS to a Swarm hash.
+ENS_DOMAIN – Optional, only used if you plan to resolve your site via ENS.
 
-Keep .env.local out of version control.
+⚠️ Do not commit .env.local to version control.
 
-3) Run
+3. Start the development server
 bash
 Copy code
 npm run dev
-# open http://localhost:3000
-Project Structure
-graphql
+Then open http://localhost:3000 in your browser.
+
+yaml
 Copy code
+
+---
+
+## 📄 README.md – Part 2 (bottom half)
+
+```markdown
+---
+
+## 📁 Project Structure
+
 src/
 ├─ app/
-│  ├─ api/                 # Server API routes (profile, forum, moderation)
-│  ├─ dashboard/           # Home/Dashboard
-│  ├─ forum/               # Board + Thread pages
-│  └─ profile/             # Profile UI (edit/view)
-├─ components/             # Reusable UI (Composer, PostItem, etc.)
+│ ├─ api/ # Server API routes (profile, forum, moderation)
+│ ├─ dashboard/ # Home/Dashboard
+│ ├─ forum/ # Board + Thread pages
+│ └─ profile/ # Profile UI (edit/view)
+├─ components/ # Reusable UI components
 ├─ lib/
-│  ├─ auth/                # EIP-712/EIP-191 login + posting identity
-│  ├─ forum/               # topics, publisher, pack, client helpers
-│  └─ profile/             # context, service, storage, swarm helpers
-└─ config/                 # centralised config (e.g., Bee URLs)
+│ ├─ auth/ # EIP-712/EIP-191 login + posting identity
+│ ├─ forum/ # topics, publisher, pack, client helpers
+│ └─ profile/ # context, service, storage, swarm helpers
+└─ config/ # Bee / environment config
 docs/
 ├─ System-Components.pdf
 └─ Forum-Architecture.pdf
-How it works (high level)
-Reads (GET): the browser fetches directly from Bee (/feeds, /bytes, /bzz) to display
-profiles, posts, avatars — no database involved.
 
-Writes (POST): the server API (with the platform signer + postage batch) uploads immutable
-JSON blobs and advances Swarm feeds (board indexes, threads, profile feeds).
+yaml
+Copy code
 
-Login / Auth: Web3 users sign an EIP-712 capability; posts are signed with EIP-191.
-The client verifies before sending, and the server re-verifies before publishing.
+---
 
-Local Development Notes
-You’ll need a reachable Bee node or gateway and a valid postage batch.
+## 🐝 How It Works (Overview)
 
-For moderation and posting, the server must have FEED_PRIVATE_KEY and POSTAGE_BATCH_ID.
+- **Reads (GET):** The browser fetches directly from Bee (`/feeds`, `/bytes`, `/bzz`) to display profiles, posts, and avatars.  
+- **Writes (POST):** The server API (with the platform signer and postage batch) uploads immutable JSON blobs and updates Swarm feeds.  
+- **Login / Auth:** Web3 users sign an **EIP-712** capability; posts are signed with **EIP-191** and verified before publishing.
 
-Client fetches rely on NEXT_PUBLIC_BEE_URL. If you swap to a public gateway later, update it here.
+---
 
-Docs
-System Components – overall architecture and deployment shape:
-docs/System-Components.pdf
+## 📚 Documentation
 
-Forum Architecture & Flows – login, profiles, posting, replies:
-docs/Forum-Architecture.pdf
+Detailed documentation is included in the `docs/` folder:
 
-Roadmap (short)
- Public deployment docs (Bee/gateway, postage management, CORS)
+- 📘 [System Components](./docs/System-Components.pdf) – overview of architecture and deployment  
+- 🧠 [Forum Architecture & Flows](./docs/Forum-Architecture.pdf) – login, profile feeds, posting, replies
 
- Optional: user-provided postage batch flow
+---
 
- Production hardening (rate limits, input caps, anti-spam)
+## 🧰 Development Notes
+
+- A **Bee node or gateway** must be running and reachable.
+- A valid **postage batch** is required for uploads and feed writes.
+- Server-side posting and moderation require `FEED_PRIVATE_KEY` and `POSTAGE_BATCH_ID`.
+- Client-side reads depend on `NEXT_PUBLIC_BEE_URL`. Update this to a public gateway if needed.
+
+---
+
+## 📍 Roadmap
+
+- [ ] Deployment instructions for Bee gateway and ENS
+- [ ] Optional: support user-provided postage batches
+- [ ] Production hardening (rate limiting, spam prevention)
+- [ ] CI/CD pipeline
+
+---
+
+## 📜 License
+
+MIT © 2025
