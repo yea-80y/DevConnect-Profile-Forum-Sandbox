@@ -56,10 +56,10 @@ docker rm cloudflare-tunnel
 ### 4. Update Cloudflare Dashboard Configuration
 1. Go to [Cloudflare Zero Trust Dashboard](https://one.dash.cloudflare.com/)
 2. Navigate to **Networks → Tunnels**
-3. Find tunnel: `YOUR-TUNNEL-UUID`
+3. Find your tunnel
 4. Click **Configure** → **Public Hostname** tab
-5. Edit hostname `gateway.woco-net.com`
-6. Changed service URL from `http://DOCKER-INTERNAL-IP:3000` to `http://localhost:3323`
+5. Edit your hostname
+6. Changed service URL from Docker internal IP to `http://localhost:3323`
 7. Saved configuration
 
 **Why localhost:3323?**

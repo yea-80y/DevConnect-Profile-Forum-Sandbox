@@ -78,3 +78,6 @@ frontend/.swarm/
 
 # Debugging/inspection folders
 frontend/tar-inspect/
+
+# Archive docs with sensitive info (local reference only)
+docs/archive/
