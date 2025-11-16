@@ -1,5 +1,7 @@
 # dependencies
-/node_modules
+node_modules/
+frontend/node_modules/
+backend/node_modules/
 /.pnp
 .pnp.*
 .yarn/*
@@ -10,12 +12,18 @@
 
 # testing
 /coverage
+frontend/coverage/
+backend/coverage/
 
 # build output (Vite, React, Next)
 dist/
 build/
-/out/
-/.next/
+out/
+.next/
+frontend/out/
+frontend/.next/
+backend/out/
+backend/.next/
 
 # misc
 .DS_Store
@@ -31,6 +39,9 @@ pnpm-debug.log*
 .env
 .env.local
 .env.*.local
+.env.production.local
+frontend/.env.production.local
+backend/.env.production.local
 
 # deployment
 .vercel
@@ -38,3 +49,20 @@ pnpm-debug.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# backups and archives
+*.tar.gz
+*.tgz
+*.zip
+*.bak
+*.old
+*.tmp
+*-backup-*
+devconnect-server-*
+
+# Swarm deployment artifacts
+frontend/.swarm/
+.swarm/
+
+# Legacy root src/ folder - removed during reorganization
+/src/

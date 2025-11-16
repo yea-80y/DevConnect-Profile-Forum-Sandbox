@@ -1,0 +1,55 @@
+
+> devconnect-profile-sandbox@0.1.0 dev
+> next dev
+
+ ⚠ Warning: Next.js inferred your workspace root, but it may not be correct.
+ We detected multiple lockfiles and selected the directory of C:\Users\nabil\devconnect-profile-sandbox\package-lock.json as the root directory.
+ To silence this warning, set `outputFileTracingRoot` in your Next.js config, or consider removing one of the lockfiles if it's not needed.
+   See https://nextjs.org/docs/app/api-reference/config/next-config-js/output#caveats for more information.
+ Detected additional lockfiles: 
+   * C:\Users\nabil\devconnect-profile-sandbox\frontend\package-lock.json
+
+ ⚠ Port 3000 is in use by process 42908, using available port 3001 instead.
+   ▲ Next.js 15.5.2
+   - Local:        http://localhost:3001
+   - Network:      http://172.29.80.1:3001
+   - Environments: .env.local
+
+ ✓ Starting...
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: EPERM: operation not permitted, open 'C:\Users\nabil\devconnect-profile-sandbox\frontend\.next\trace'
+Emitted 'error' event on WriteStream instance at:
+    at emitErrorNT (node:internal/streams/destroy:169:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:128:3)
+    at process.processTicksAndRejections (node:internal/process/task_queues:82:21) {
+  errno: -4048,
+  code: 'EPERM',
+  syscall: 'open',
+  path: 'C:\\Users\\nabil\\devconnect-profile-sandbox\\frontend\\.next\\trace'
+}
+
+Node.js v20.19.0
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: EPERM: operation not permitted, open 'C:\Users\nabil\devconnect-profile-sandbox\frontend\.next\trace'
+Emitted 'error' event on WriteStream instance at:
+    at emitErrorNT (node:internal/streams/destroy:169:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:128:3)
+    at process.processTicksAndRejections (node:internal/process/task_queues:82:21) {
+  errno: -4048,
+  code: 'EPERM',
+  syscall: 'open',
+  path: 'C:\\Users\\nabil\\devconnect-profile-sandbox\\frontend\\.next\\trace'
+}
+
+Node.js v20.19.0
+npm notice
+npm notice New major version of npm available! 10.8.2 -> 11.6.2
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.6.2
+npm notice To update run: npm install -g npm@11.6.2
+npm notice

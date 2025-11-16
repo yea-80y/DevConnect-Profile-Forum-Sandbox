@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/nabil/bee_gateway/bee-slam/proxy/src/**)",
+      "Read(//c/Users/nabil/bee_gateway/bee-slam/proxy/dist/**)",
+      "Bash(ssh:*)",
+      "Bash(cat:*)"
+    ],
+    "deny": [],
+    "ask": [
+      "Edit(*)",
+      "Write(*)",
+      "NotebookEdit(*)"
+    ]
+  }
+}

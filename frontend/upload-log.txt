@@ -1,0 +1,14 @@
+
+🚀 Starting Swarm Feed Upload...
+
+📡 Bee: https://gateway.woco-net.com
+📝 Feed Topic: woco-website
+👤 Feed Owner: f8af4904c6e4f08ce5f7deab7f01221280b23a80
+
+📦 Creating tar from: ./out ...
+✅ Tar created: ./site.tar
+📤 Uploading tar (3384320 bytes)...
+✅ Tar uploaded. Reference: f34b9cc0f9bfac598a029c5da854f94c9d8efb4858937911754357e8af7748a6
+🧭 Creating feed manifest (one-time) ...
+✅ Feed manifest created: 0b4ea8162a3fcbb19b63705f0c97137eef667d3c3cd4ecf69d686c5f98fb0054
+❌ Upload failed: Unexpected token '', "N�*?˱�cp"... is not valid JSON
