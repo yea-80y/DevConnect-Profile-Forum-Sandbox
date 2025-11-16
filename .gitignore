@@ -64,5 +64,17 @@ devconnect-server-*
 frontend/.swarm/
 .swarm/
 
-# Legacy root src/ folder - removed during reorganization
+# Legacy folders - removed during reorganization
 /src/
+/public/
+
+# Root config files - projects are self-contained in frontend/ and backend/
+/package.json
+/package-lock.json
+/tsconfig.json
+/next.config.ts
+/postcss.config.mjs
+/eslint.config.mjs
+
+# Debugging/inspection folders
+frontend/tar-inspect/
