@@ -4,7 +4,7 @@ A decentralized forum and profile application built on Ethereum and Swarm.
 
 Demonstrates **Swarm-hosted user profiles** and a **decentralized message board** using Swarm (Bee), Swarm Feeds, and EIP-712/EIP-191 signatures for user-owned identities and cryptographically verified posts.
 
-> **Status:** Live deployment at [gateway.woco-net.com](https://gateway.woco-net.com/bzz/9ebcea7ca2d4a3a975d1724ee579856684dc6f2ffa3082b64317006c922f3100/)
+> **Status:** Live deployment at [https://gateway.woco-net.com/bzz/9ebcea7ca2d4a3a975d1724ee579856684dc6f2ffa3082b64317006c922f3100/](https://gateway.woco-net.com/bzz/9ebcea7ca2d4a3a975d1724ee579856684dc6f2ffa3082b64317006c922f3100/)
 
 ---
 
@@ -16,7 +16,7 @@ This repository contains both frontend and backend:
 devconnect-profile-sandbox/
 ├── frontend/          # Next.js static export → deployed to Swarm
 ├── backend/           # Next.js API routes → runs on server
-└── src/              # Legacy (will be removed)
+└── docs/              # Documentation
 ```
 
 ### Frontend (Decentralized Static Site)
@@ -140,12 +140,12 @@ node upload-manual-collection.js
 ### Backend Deployment
 
 ```bash
-# On server laptop (SERVER-IP)
-ssh server-user@SERVER-IP
+# On your server
+ssh user@your-server
 cd ~/your-backend-directory
 git pull
 npm install
-pm2 restart devconnect-api
+pm2 restart your-api-name
 ```
 
 ---
@@ -173,11 +173,11 @@ Currently, Next.js has CSP compatibility issues with eth.limo gateways. The site
 
 ---
 
-## Links
+## Demo Links
 
-- **Live Site:** [gateway.woco-net.com](https://gateway.woco-net.com/bzz/9ebcea7ca2d4a3a975d1724ee579856684dc6f2ffa3082b64317006c922f3100/)
-- **API:** <https://api.woco-net.com>
-- **Gateway:** <https://gateway.woco-net.com>
+- **Live Site:** [https://gateway.woco-net.com/bzz/9ebcea7ca2d4a3a975d1724ee579856684dc6f2ffa3082b64317006c922f3100/](https://gateway.woco-net.com/bzz/9ebcea7ca2d4a3a975d1724ee579856684dc6f2ffa3082b64317006c922f3100/)
+- **API:** [https://api.woco-net.com](https://api.woco-net.com)
+- **Gateway:** [https://gateway.woco-net.com](https://gateway.woco-net.com)
 
 ---
 
