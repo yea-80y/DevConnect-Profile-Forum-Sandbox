@@ -48,3 +48,6 @@ next-env.d.ts
 *.tmp
 *-backup-*
 devconnect-server-*
+
+# Local scripts and docs with sensitive info (keys, batch IDs, etc.)
+.local-scripts/
