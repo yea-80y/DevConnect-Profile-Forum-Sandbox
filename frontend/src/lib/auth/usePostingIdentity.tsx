@@ -166,6 +166,7 @@ export interface UsePostingIdentity {
   rotateSafe: () => Promise<void>;
   logout: () => Promise<void>;
   signPost: (payload: Uint8Array | string) => Promise<string>;
+  getWalletForPOD: () => Promise<{ privateKey?: string; seed?: string } | null>; // Access wallet or seed for POD signing
 }
 
 /** The EIP-712 domain (chain-agnostic by design). */
@@ -229,6 +230,12 @@ export interface CapabilityBundle {
   parentSig: string; // 0x...
 }
 
+/** POD seed derived from parentSig - ties POD identity to MetaMask wallet */
+interface PodSeedData {
+  seed: string; // hex string derived from parentSig
+  derivedFrom: "eip712-signature"; // Track how it was derived
+}
+
 /** Payload shape we send to eth_signTypedData_v4. */
 type CapabilityPayload = {
   domain: TypedDataDomain;
@@ -245,6 +252,7 @@ const OS_KV = "kv";
 const K_DEVICE_KEY = "woco:deviceKey"; // CryptoKey (non-extractable)
 const K_ENC_KEYSTORE = "woco:encKeystore"; // { iv, ct }
 const K_ENC_CAP = "woco:encCap"; // { iv, ct }
+const K_POD_SEED = "woco:podSeed"; // POD seed derived from EIP-712 signature
 const K_KIND = "woco:kind"; // "web3" | "local"
 
 /* API endpoint for server nonce** */
@@ -400,6 +408,20 @@ async function signTypedDataV4(
     })) as string;
   }
 
+/**
+ * Derive POD seed from EIP-712 signature
+ * This ties POD identity to MetaMask wallet (deterministic)
+ * Same wallet + same message → same signature → same POD identity
+ */
+function derivePodSeedFromSignature(parentSig: string): PodSeedData {
+  // Hash the signature to create deterministic seed
+  const seed = keccak256(toUtf8Bytes(parentSig));
+  return {
+    seed,
+    derivedFrom: "eip712-signature",
+  };
+}
+
 /** Content-addressed identifier of the capability (JSON keccak). */
 function capabilityId(input: CapabilityBundle | CapabilityMessage): string {
   const json = "message" in (input as CapabilityBundle) ? JSON.stringify((input as CapabilityBundle).message) : JSON.stringify(input);
@@ -497,7 +519,20 @@ export default function usePostingIdentity(): UsePostingIdentity {
   /** 🚦 One-shot guard to prevent two concurrent sign flows (double click / re-render). */
   const signInFlightRef = useRef(false);
 
-  // Rehydrate on mount (same device)
+  // Rehydration version - increments when auth:changed event fires
+  const [rehydrateVersion, setRehydrateVersion] = useState(0);
+
+  // Listen for auth:changed events and trigger re-rehydration
+  useEffect(() => {
+    const onAuthChanged = () => {
+      setRehydrateVersion(v => v + 1);
+    };
+
+    window.addEventListener("auth:changed", onAuthChanged);
+    return () => window.removeEventListener("auth:changed", onAuthChanged);
+  }, []);
+
+  // Rehydrate on mount AND when auth:changed event fires (via rehydrateVersion)
   useEffect(() => {
     (async () => {
       try {
@@ -546,17 +581,17 @@ export default function usePostingIdentity(): UsePostingIdentity {
         setCapId(capabilityId(bundle));
 
         if (ok) {
-  const parent0x = getAddress(bundle.message.parent);
-    setParent(parent0x);
-    setPostAuth("parent-bound");
-    // seed subject with PARENT
-    try { sessionStorage.setItem("woco.subject0x", parent0x); } catch {}
-    } else {
-    setParent(undefined);
-    setPostAuth("blocked");
-    // clear subject seed if we can't post yet
-    try { sessionStorage.removeItem("woco.subject0x"); } catch {}
-    }
+          const parent0x = getAddress(bundle.message.parent);
+          setParent(parent0x);
+          setPostAuth("parent-bound");
+          // seed subject with PARENT
+          try { sessionStorage.setItem("woco.subject0x", parent0x); } catch {}
+        } else {
+          setParent(undefined);
+          setPostAuth("blocked");
+          // clear subject seed if we can't post yet
+          try { sessionStorage.removeItem("woco.subject0x"); } catch {}
+        }
 
         setReady(true);
       } catch (e) {
@@ -566,7 +601,7 @@ export default function usePostingIdentity(): UsePostingIdentity {
         setReady(true);
       }
     })();
-  }, []);
+  }, [rehydrateVersion]);
 
   /** Sign arbitrary payload with the posting key (safe signer). */
   const signPost = useCallback<UsePostingIdentity["signPost"]>(async (payload) => {
@@ -576,12 +611,43 @@ export default function usePostingIdentity(): UsePostingIdentity {
     return await w.signMessage(data);
   }, []);
 
+  /** Get wallet private key or seed for POD signing (only when user is logged in). */
+  const getWalletForPOD = useCallback<UsePostingIdentity["getWalletForPOD"]>(async () => {
+    const w = postingWalletRef.current;
+    if (!w) return null;
+
+    // For web3 users: return POD seed derived from EIP-712 signature
+    if (kind === "web3") {
+      try {
+        const deviceKey = await ensureDeviceKey();
+        const encPodSeed = await getKV<EncryptedJSON>(K_POD_SEED);
+        if (encPodSeed) {
+          const podSeedData = await decryptJSON<PodSeedData>(deviceKey, encPodSeed);
+          return { seed: podSeedData.seed };
+        }
+      } catch (e) {
+        console.warn("[getWalletForPOD] Failed to load POD seed for web3 user", e);
+      }
+    }
+
+    // For local users: return private key
+    return { privateKey: w.privateKey };
+  }, [kind]);
+
   /** Local login: generate a local identity (no capability). */
   const startLocalLogin = useCallback<UsePostingIdentity["startLocalLogin"]>(async () => {
+    // ✅ CRITICAL: Clear any existing Web3 credentials first
+    // This prevents old Web3 data from persisting when creating a new local account
+    try {
+      await delKV(K_ENC_CAP); // Remove Web3 capability if it exists
+    } catch {}
+
     const deviceKey = await ensureDeviceKey();
     const wallet = Wallet.createRandom();
+
     const keystore = await wallet.encrypt("dummy-pass");
     const encKS = await encryptJSON(deviceKey, { keystore });
+
     await putKV(K_ENC_KEYSTORE, encKS);
     await putKV(K_KIND, "local");
 
@@ -594,6 +660,29 @@ export default function usePostingIdentity(): UsePostingIdentity {
     setCapId(undefined);
     setPostAuth("local-only");
     setReady(true);
+
+    // ✅ CRITICAL: Clear old subject from localStorage to prevent contamination
+    // The dashboard reads from localStorage, so we must clear old Web3 addresses
+    try { localStorage.removeItem("woco.subject0x"); } catch {}
+
+    // ✅ CRITICAL: Clear ALL cached profile data to prevent showing old Web3 profile
+    // This ensures the new local account shows a blank profile, not cached Web3 data
+    try {
+      const keys = Object.keys(localStorage);
+      const profileKeys = keys.filter(k => k.startsWith('profile:'));
+      profileKeys.forEach(key => {
+        localStorage.removeItem(key);
+      });
+    } catch {}
+
+    // ✅ OPTIMIZATION: Mark as new account (local accounts are ALWAYS freshly generated)
+    // Since this is a brand new crypto wallet that never existed before,
+    // there's NO possibility of an existing profile on Swarm
+    // This flag tells ProfileProvider to skip the initial Swarm fetch
+    try { localStorage.setItem("woco.isNewAccount", "true"); } catch {}
+
+    // ✅ CRITICAL: Emit auth:changed event so other usePostingIdentity instances re-rehydrate
+    window.dispatchEvent(new CustomEvent("auth:changed"));
 
     // ✅ NEW: report success
     return true;
@@ -636,6 +725,12 @@ const startWeb3Login = useCallback<UsePostingIdentity["startWeb3Login"]>(async (
         setSubjectCookie(parent0x);
         try { sessionStorage.setItem("woco.subject0x", parent0x); } catch {}
 
+        // ✅ CRITICAL: Clear old cached subject from localStorage
+        try { localStorage.removeItem("woco.subject0x"); } catch {}
+
+        // ✅ CRITICAL: Clear isNewAccount flag for Web3 users
+        // This flag is only for local accounts - Web3 accounts should always fetch their profile
+        try { localStorage.removeItem("woco.isNewAccount"); } catch {}
 
         signInFlightRef.current = false;
         return true; // ✅ already good; no new sign needed
@@ -687,15 +782,20 @@ const startWeb3Login = useCallback<UsePostingIdentity["startWeb3Login"]>(async (
       throw new Error(`712 mismatch: recovered ${recovered} vs selected ${parentAddr}`);
     }
 
-    // 6) Persist encrypted artifacts (posting keystore + capability bundle)
+    // 6) Persist encrypted artifacts (posting keystore + capability bundle + POD seed)
     const bundle: CapabilityBundle = { message: capMsg, parentSig };
     const deviceKey = await ensureDeviceKey();
     const keystore = await safeWallet.encrypt("dummy-pass");
     const encKS = await encryptJSON(deviceKey, { keystore });
     const encCap = await encryptJSON(deviceKey, { capability: bundle.message, parentSig: bundle.parentSig });
 
+    // Derive POD seed from EIP-712 signature (deterministic: same wallet → same POD identity)
+    const podSeedData = derivePodSeedFromSignature(parentSig);
+    const encPodSeed = await encryptJSON(deviceKey, podSeedData);
+
     await putKV(K_ENC_KEYSTORE, encKS);
     await putKV(K_ENC_CAP, encCap);
+    await putKV(K_POD_SEED, encPodSeed);
     await putKV(K_KIND, "web3");
 
     // 7) Update in-memory state and gate posting
@@ -725,6 +825,18 @@ const startWeb3Login = useCallback<UsePostingIdentity["startWeb3Login"]>(async (
     setPostAuth(ok ? "parent-bound" : "blocked");
     setReady(true);
 
+    // ✅ CRITICAL: Clear old cached subject from localStorage
+    try { localStorage.removeItem("woco.subject0x"); } catch {}
+
+    // ✅ CRITICAL: Clear isNewAccount flag for Web3 users
+    // This flag is only for local accounts - Web3 accounts should always fetch their profile
+    try { localStorage.removeItem("woco.isNewAccount"); } catch {}
+
+    // ✅ CRITICAL: Emit auth:changed event so other usePostingIdentity instances re-rehydrate
+    // This ensures ClientProviders picks up the new credentials after Web3 login
+    if (ok) {
+      window.dispatchEvent(new CustomEvent("auth:changed"));
+    }
 
     result = ok;
   } catch {
@@ -801,15 +913,20 @@ try {
     throw new Error(`712 mismatch: recovered ${recovered} vs selected ${parentAddr}`);
     }
 
-    // 6) Persist and update state
+    // 6) Persist and update state (including POD seed)
     const bundle: CapabilityBundle = { message: capMsg, parentSig };
     const deviceKey = await ensureDeviceKey();
     const keystore = await safeWallet.encrypt("dummy-pass");
     const encKS = await encryptJSON(deviceKey, { keystore });
     const encCap = await encryptJSON(deviceKey, { capability: bundle.message, parentSig: bundle.parentSig });
 
+    // Derive POD seed from EIP-712 signature (deterministic: same wallet → same POD identity)
+    const podSeedData = derivePodSeedFromSignature(parentSig);
+    const encPodSeed = await encryptJSON(deviceKey, podSeedData);
+
     await putKV(K_ENC_KEYSTORE, encKS);
     await putKV(K_ENC_CAP, encCap);
+    await putKV(K_POD_SEED, encPodSeed);
     await putKV(K_KIND, "web3");
 
     postingWalletRef.current = safeWallet;
@@ -895,15 +1012,20 @@ const rotateSafe = useCallback<UsePostingIdentity["rotateSafe"]>(async () => {
         throw new Error(`712 mismatch: recovered ${recovered} vs selected ${parentAddr}`);
       }
 
-      // 6) Encrypt & store new safe + capability; this replaces previous ones
+      // 6) Encrypt & store new safe + capability + POD seed; this replaces previous ones
       const bundle: CapabilityBundle = { message: capMsg, parentSig };
       const deviceKey = await ensureDeviceKey();
       const keystore = await safeWallet.encrypt("dummy-pass");
       const encKS = await encryptJSON(deviceKey, { keystore });
       const encCap = await encryptJSON(deviceKey, { capability: bundle.message, parentSig: bundle.parentSig });
 
+      // Derive POD seed from EIP-712 signature (deterministic: same wallet → same POD identity)
+      const podSeedData = derivePodSeedFromSignature(parentSig);
+      const encPodSeed = await encryptJSON(deviceKey, podSeedData);
+
       await putKV(K_ENC_KEYSTORE, encKS);
       await putKV(K_ENC_CAP, encCap);
+      await putKV(K_POD_SEED, encPodSeed);
       await putKV(K_KIND, "web3");
 
       // 7) Update in-memory state to the rotated safe and selected parent
@@ -931,8 +1053,36 @@ const rotateSafe = useCallback<UsePostingIdentity["rotateSafe"]>(async () => {
     await delKV(K_ENC_KEYSTORE);
     await delKV(K_ENC_CAP);
     await delKV(K_KIND);
-    try { sessionStorage.removeItem("woco.subject0x"); } catch {}
-    clearSubjectCookie(); // --- ADD THIS ---
+
+    try {
+      sessionStorage.removeItem("woco.subject0x");
+      localStorage.removeItem("woco.subject0x"); // ✅ Also clear from localStorage
+    } catch {}
+    clearSubjectCookie();
+
+    // ✅ CRITICAL: Clear all profile cache (including images) on logout
+    // This prevents cached profile data from showing when creating a new account
+    try {
+      const keys = Object.keys(localStorage);
+      keys.forEach(key => {
+        // Clear profile context cache (format: profile:owner:subject)
+        if (key.startsWith('profile:')) {
+          localStorage.removeItem(key);
+        }
+        // Clear legacy profile cache (format: woco.profile.0x...)
+        if (key.startsWith('woco.profile.')) {
+          localStorage.removeItem(key);
+        }
+        // Clear cached owner
+        if (key === 'woco.owner0x') {
+          localStorage.removeItem(key);
+        }
+      });
+
+      // ✅ Clear isNewAccount flag on logout to prevent cross-contamination
+      localStorage.removeItem("woco.isNewAccount");
+    } catch {}
+
     postingWalletRef.current = null;
     setKind("none");
     setParent(undefined);
@@ -983,7 +1133,8 @@ const rotateSafe = useCallback<UsePostingIdentity["rotateSafe"]>(async () => {
       rotateSafe,
       logout,
       signPost,
+      getWalletForPOD,
     }),
-    [ready, kind, postAuth, parent, safe, capId, startWeb3Login, startLocalLogin, signCapabilityNow, rotateSafe, logout, signPost]
+    [ready, kind, postAuth, parent, safe, capId, startWeb3Login, startLocalLogin, signCapabilityNow, rotateSafe, logout, signPost, getWalletForPOD]
   );
 }

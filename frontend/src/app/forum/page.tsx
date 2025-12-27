@@ -20,7 +20,11 @@ import { primeAvatarCache, pickAvatarRefFromPayload, pickAvatarRefFromProfile } 
 import { useMe } from "@/app/ClientProviders"
 import { AdminLoginButton } from "@/components/admin/AdminLoginButton"
 import { AdminLogoutButton } from "@/components/admin/AdminLogoutButton"
-import { apiUrl } from "@/config/api"    
+import ThemeToggle from "@/components/ThemeToggle"
+import { apiUrl } from "@/config/api"
+import { useWalletConnection } from "@/lib/wallet/useWalletConnection"
+import WalletWarningBanner from "@/components/wallet/WalletWarningBanner"
+import usePostingIdentity from "@/lib/auth/usePostingIdentity"    
 
 
 // Build a CanonicalPost-shaped stub from a payload (no `any`, zero runtime cost)
@@ -38,6 +42,10 @@ function ForumContent() {
 
   // MODERATION: read admin state ONCE at the top (rules of hooks)
   const { isAdmin } = useMe()
+
+  // Wallet connection monitoring (for Web3 users only)
+  const id = usePostingIdentity()
+  const wallet = useWalletConnection()
 
   const [threads, setThreads] = useState<string[]>([])
   const [firstPosts, setFirstPosts] = useState<Record<string, CanonicalPost | null>>({})
@@ -127,29 +135,36 @@ function ForumContent() {
   }, [firstPosts])
   
   return (
-    <main className="mx-auto max-w-3xl px-4 py-4 space-y-6">
-      {/* title + admin controls */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => router.push(isThreadView ? '/forum' : '/dashboard')}
-            className="text-sm text-gray-600 hover:text-gray-900 underline"
-          >
-            {isThreadView ? 'Back' : 'Back to Dashboard'}
-          </button>
-          <h1 className="text-lg font-semibold">{isThreadView ? 'Thread' : `Forum — ${BOARD_ID}`}</h1>
+    <main className="min-h-dvh bg-neutral-50 dark:bg-gray-900 pb-20 transition-colors">
+      <div className="mx-auto max-w-3xl px-4 py-4 space-y-6">
+        {/* title + admin controls */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => router.push(isThreadView ? '/forum' : '/dashboard')}
+              className="text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 underline"
+            >
+              {isThreadView ? 'Back' : 'Back to Dashboard'}
+            </button>
+            <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100">{isThreadView ? 'Thread' : `Forum — ${BOARD_ID}`}</h1>
+          </div>
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            {isAdmin ? (
+              <>
+                <span className="text-xs rounded bg-gray-200 dark:bg-gray-700 px-2 py-1 text-gray-900 dark:text-gray-100">Admin mode</span>
+                <AdminLogoutButton />
+              </>
+            ) : (
+              <AdminLoginButton />
+            )}
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          {isAdmin ? (
-            <>
-              <span className="text-xs rounded bg-gray-200 px-2 py-1">Admin mode</span>
-              <AdminLogoutButton />
-            </>
-          ) : (
-            <AdminLoginButton />
-          )}
-        </div>
-      </div>
+
+        {/* Wallet disconnected warning (Web3 users only) */}
+        {id.kind === "web3" && wallet.isConnected === false && (
+          <WalletWarningBanner onReconnect={wallet.reconnect} />
+        )}
 
       {/* thread/reply composer */}
       <Composer
@@ -194,13 +209,13 @@ function ForumContent() {
         }}
       />
 
-      {/* list of threads */}
-      <section className="space-y-3">
-        {busy && <div className="text-sm text-gray-500">Loading board…</div>}
-        {err && <div className="text-sm text-red-600">{err}</div>}
-        {!busy && !err && threads.length === 0 && (
-          <div className="text-sm text-gray-500">No threads yet. Start one!</div>
-        )}
+        {/* list of threads */}
+        <section className="space-y-3">
+          {busy && <div className="text-sm text-gray-500 dark:text-gray-400">Loading board…</div>}
+          {err && <div className="text-sm text-red-600 dark:text-red-400">{err}</div>}
+          {!busy && !err && threads.length === 0 && (
+            <div className="text-sm text-gray-500 dark:text-gray-400">No threads yet. Start one!</div>
+          )}
         {threads.map((ref) => {
           const c = firstPosts[ref]
           const author = c?.payload.subject ?? ""
@@ -241,15 +256,16 @@ function ForumContent() {
               {postItem}
             </Link>
           )
-        })}
-      </section>
+          })}
+        </section>
+      </div>
     </main>
   )
 }
 
 export default function BoardPage() {
   return (
-    <Suspense fallback={<div className="p-4 text-center">Loading...</div>}>
+    <Suspense fallback={<div className="p-4 text-center text-gray-600 dark:text-gray-400">Loading...</div>}>
       <ForumContent />
     </Suspense>
   )

@@ -38,14 +38,28 @@ export function ProfileProvider(props: {
 }) {
   const { children, subject, feedOwner, beeUrl } = props;
 
-  const [profile, setProfile] = useState<ProfileRenderPack | null>(null);
-
   // Cache key to scope persisted state to (owner, subject)
   const cacheKey = useMemo(() => (
     subject && feedOwner ? `profile:${feedOwner}:${subject}` : null
   ), [subject, feedOwner]);
 
-  // 1) Hydrate from localStorage quickly
+  // ✅ 1) Hydrate from localStorage SYNCHRONOUSLY (lazy initialization for instant UI)
+  const [profile, setProfile] = useState<ProfileRenderPack | null>(() => {
+    if (!subject || !feedOwner) return null;
+    const key = `profile:${feedOwner}:${subject}`;
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as ProfileRenderPack;
+      // Only accept if identities match
+      if (parsed?.subject === subject && parsed?.feedOwner === feedOwner) {
+        return parsed;
+      }
+    } catch {}
+    return null;
+  });
+
+  // Keep profile synced when cacheKey changes (e.g., user switches accounts)
   useEffect(() => {
     if (!cacheKey) {
       setProfile(null);
@@ -60,7 +74,11 @@ export function ProfileProvider(props: {
       const parsed = JSON.parse(raw) as ProfileRenderPack;
       // Only accept if identities match
       if (parsed?.subject === subject && parsed?.feedOwner === feedOwner) {
-        setProfile(parsed);
+        // Only update if different to avoid unnecessary re-renders
+        setProfile(prev => {
+          if (JSON.stringify(prev) === JSON.stringify(parsed)) return prev;
+          return parsed;
+        });
       } else {
         setProfile(null);
       }
@@ -75,34 +93,112 @@ export function ProfileProvider(props: {
     try { localStorage.setItem(cacheKey, JSON.stringify(profile)); } catch {}
   }, [cacheKey, profile]);
 
+  // Re-hydrate from localStorage when profile:updated event fires (e.g., after navigation back from edit page)
+  useEffect(() => {
+    if (!cacheKey) return;
+
+    const onProfileUpdated = () => {
+      try {
+        const raw = localStorage.getItem(cacheKey);
+        if (!raw) return;
+        const parsed = JSON.parse(raw) as ProfileRenderPack;
+        if (parsed?.subject === subject && parsed?.feedOwner === feedOwner) {
+          // ✅ Only update if content actually changed (prevents unnecessary re-renders)
+          setProfile(prev => {
+            const prevJson = JSON.stringify(prev);
+            const parsedJson = JSON.stringify(parsed);
+            if (prevJson === parsedJson) return prev;
+            return parsed;
+          });
+        }
+      } catch (err) {
+        console.error('[ProfileProvider] Error in profile:updated handler:', err);
+      }
+    };
+
+    window.addEventListener("profile:updated", onProfileUpdated);
+    return () => window.removeEventListener("profile:updated", onProfileUpdated);
+  }, [cacheKey, subject, feedOwner]);
+
   // Simple guards to avoid overlapping calls + rate limit the visibility refresh
   const loadingRef = useRef(false);
   const lastCheckRef = useRef<number>(0);
 
   // The only place we hit Swarm to refresh; state updates only if markers changed
   const ensureFresh = useCallback(async () => {
-    if (!subject || !feedOwner) return;
-    if (loadingRef.current) return; // prevent overlaps
+    if (!subject || !feedOwner) {
+      return;
+    }
+    if (loadingRef.current) {
+      return;
+    }
+
     loadingRef.current = true;
     try {
       const next = await refreshProfileFromSwarm({ beeUrl, feedOwner, subject, prev: profile });
-      if (next && next !== profile) setProfile(next); // identity check prevents useless re-renders
+      if (next && next !== profile) {
+        setProfile(next); // identity check prevents useless re-renders
+      }
       lastCheckRef.current = Date.now();
+    } catch (error) {
+      console.error("[ProfileProvider] ensureFresh error:", error);
     } finally {
       loadingRef.current = false;
     }
   }, [beeUrl, feedOwner, subject, profile]);
 
-  // 2) Cold-start: one-shot freshness after hydration
+  // ✅ Stable ref to ensureFresh (same pattern as ProfileView) to prevent effect loops
+  const ensureFreshRef = useRef(ensureFresh);
+  useEffect(() => { ensureFreshRef.current = ensureFresh; }, [ensureFresh]);
+
+  // Track if we've fetched for this subject yet (prevents duplicate fetches on same mount)
+  const hasFetchedRef = useRef<string | null>(null);
+
+  // 2) Cold-start: fetch profile when we have valid subject + feedOwner
+  // OPTIMIZATION: Skip for brand new LOCAL accounts (they can't have a profile yet)
+  // CRITICAL: Web3 accounts ALWAYS fetch (isNewAccount flag cleared by startWeb3Login)
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (!subject || !feedOwner) return;
-      await ensureFresh();
-      if (cancelled) return;
-    })();
-    return () => { cancelled = true; };
-  }, [subject, feedOwner, ensureFresh]);
+    if (!subject || !feedOwner) {
+      return;
+    }
+
+    // Skip if we've already fetched for this exact subject
+    const fetchKey = `${feedOwner}:${subject}`;
+    if (hasFetchedRef.current === fetchKey) {
+      return;
+    }
+
+    // Check if this is a brand new LOCAL account
+    // ONLY skip Swarm fetch if:
+    // 1. isNewAccount flag is set (just created LOCAL account)
+    // 2. NO cached profile exists (hasn't created profile yet)
+    // This saves 2 unnecessary API calls on first dashboard load after LOCAL account creation
+    // NOTE: Web3 login ALWAYS clears this flag, so Web3 users ALWAYS fetch from Swarm
+    let shouldSkip = false;
+    try {
+      const isNew = localStorage.getItem("woco.isNewAccount");
+      const hasCachedProfile = profile !== null; // Check in-memory state
+
+      if (isNew === "true" && !hasCachedProfile) {
+        // Clear flag so next dashboard visit WILL fetch (in case they created profile elsewhere)
+        localStorage.removeItem("woco.isNewAccount");
+        shouldSkip = true;
+      } else if (isNew === "true" && hasCachedProfile) {
+        // Profile exists in cache - user created profile, clear flag and fetch to verify
+        localStorage.removeItem("woco.isNewAccount");
+      }
+    } catch {}
+
+    if (shouldSkip) {
+      hasFetchedRef.current = fetchKey; // Mark as "handled" so we don't retry
+      return;
+    }
+
+    // Mark as fetched BEFORE starting the async operation
+    hasFetchedRef.current = fetchKey;
+
+    void ensureFreshRef.current();
+  }, [subject, feedOwner, profile]);
 
   // 3) Visibility: at most one freshness check per VISIBILITY_REFRESH_MIN_MS
   useEffect(() => {
@@ -112,12 +208,13 @@ export function ProfileProvider(props: {
       if (document.visibilityState !== "visible") return;
       const now = Date.now();
       if (now - lastCheckRef.current < VISIBILITY_REFRESH_MIN_MS) return;
-      await ensureFresh();
+      await ensureFreshRef.current();
     };
 
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
-  }, [subject, feedOwner, ensureFresh]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subject, feedOwner]);
 
 
   // 4) Editor calls this after a successful save to update UI instantly (no network call needed).
@@ -133,8 +230,7 @@ export function ProfileProvider(props: {
     });
   }, [beeUrl, subject, feedOwner]);
 
-  // Drop stale profile if the (feedOwner, subject) pair changes AFTER first mount.
-  // (We track the previous pair so we don't wipe the initial hydration.)
+  // Drop stale profile when identity changes
   const prevIdsRef = useRef<{subject: Hex0x | null; feedOwner: Hex0x | null}>({
     subject: null,
     feedOwner: null,
@@ -142,15 +238,25 @@ export function ProfileProvider(props: {
 
   useEffect(() => {
     const prev = prevIdsRef.current;
-    const changed =
-      prev.subject !== subject || prev.feedOwner !== feedOwner;
 
-    // Only clear if this isn't the first render (prev.subject !== null)
-    if (changed && prev.subject !== null) {
+    // Reset profile in these cases:
+    // 1. Logout: subject goes from valid → null
+    // 2. Account switch: both were valid and changed
+    const isLogout = prev.subject !== null && subject === null;
+    const isAccountSwitch =
+      prev.subject !== null && prev.feedOwner !== null &&
+      subject !== null && feedOwner !== null &&
+      (prev.subject !== subject || prev.feedOwner !== feedOwner);
+
+    if (isLogout) {
+      // Logout: clear profile immediately
       setProfile(null);
-      // also allow a fresh pull right away
+    } else if (isAccountSwitch) {
+      // Account switch: clear and fetch new profile
+      setProfile(null);
       void ensureFresh();
     }
+
     prevIdsRef.current = { subject, feedOwner };
   }, [subject, feedOwner, ensureFresh]);
 

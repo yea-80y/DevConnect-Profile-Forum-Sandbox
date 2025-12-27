@@ -81,3 +81,40 @@ frontend/tar-inspect/
 
 # Archive docs with sensitive info (local reference only)
 docs/archive/
+
+# ===== LOCAL DEVELOPMENT FILES (DO NOT COMMIT) =====
+
+# Documentation and guides (local reference only)
+*.md
+!README.md
+!backend/README.md
+!frontend/README.md
+!docs/README.md
+
+# Shell scripts (local utilities)
+*.sh
+!scripts/*.sh
+
+# Log files
+*.log
+frontend/*.log
+backend/*.log
+
+# Tar archives (build artifacts)
+*.tar
+frontend/*.tar
+
+# Upload and deployment scripts (local utilities)
+frontend/upload-*.js
+frontend/test-*.js
+frontend/fix-*.js
+frontend/clear-*.js
+frontend/create-*.js
+
+# VS Code workspace files
+*.code-workspace
+
+# Backup files
+*.env.*.backup
+frontend/.env.local.backup
+backend/.env.local.backup
