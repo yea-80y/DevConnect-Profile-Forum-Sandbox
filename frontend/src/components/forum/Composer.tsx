@@ -13,6 +13,7 @@
 
 import { ChangeEvent, useState } from "react"
 import usePostingIdentity from "@/lib/auth/usePostingIdentity"
+import { useWalletConnection } from "@/lib/wallet/useWalletConnection"
 import { Button } from "@/components/ui/button"
 import { sha256HexString } from "@/lib/forum/crypto"
 import { submitPost } from "@/lib/forum/client"
@@ -87,11 +88,14 @@ export function Composer(props: {
   // After: const { profile } = useProfile()
   const id = usePostingIdentity()
 
+  // Wallet connection monitoring (for Web3 users only)
+  const wallet = useWalletConnection()
+
   // block until storage & checks are done
   if (!id.ready) {
     return (
-      <div className="rounded border p-3 bg-white/90">
-        <div className="text-sm">Loading identity…</div>
+      <div className="rounded border dark:border-gray-700 p-3 bg-white/90 dark:bg-gray-800/90">
+        <div className="text-sm dark:text-gray-300">Loading identity…</div>
       </div>
     )
   }
@@ -99,9 +103,9 @@ export function Composer(props: {
   // Web3 sessions must have a valid capability
   if (id.kind === "web3" && id.postAuth === "blocked") {
     return (
-      <div className="rounded border p-3 bg-white/90 space-y-2">
-        <div className="text-sm font-semibold text-gray-900">Authorize posting</div>
-        <p className="text-sm">
+      <div className="rounded border dark:border-gray-700 p-3 bg-white/90 dark:bg-gray-800/90 space-y-2">
+        <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">Authorize posting</div>
+        <p className="text-sm dark:text-gray-300">
           You need to authorize a posting key with your wallet before posting.
         </p>
         <Button onClick={id.signCapabilityNow}>Authorize (EIP-712)</Button>
@@ -112,6 +116,12 @@ export function Composer(props: {
 
   async function onSubmit() {
     setErr(null)
+
+    // Layer 3: Check wallet connection before posting (Web3 users only)
+    if (id.kind === "web3" && wallet.isConnected === false) {
+      setErr("Your wallet is disconnected. Please reconnect your wallet to post.");
+      return;
+    }
 
     if (!id.safe) { setErr("No active posting key. Log in first."); return }
     if (id.kind === "web3" && id.postAuth !== "parent-bound") {
@@ -210,15 +220,15 @@ export function Composer(props: {
   }
 
   return (
-    <div className="rounded border p-3 bg-white/90 space-y-2">
-      <div className="text-sm font-semibold text-gray-900">{replyTo ? "Reply" : "Start a thread"}</div>
+    <div className="rounded border dark:border-gray-700 p-3 bg-white/90 dark:bg-gray-800/90 space-y-2">
+      <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">{replyTo ? "Reply" : "Start a thread"}</div>
 
       {/* Plain textarea keeps typing perf solid */}
       <textarea
         value={content}
         onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setContent(e.target.value)}
         placeholder={replyTo ? "Write a reply…" : "Write a new thread…"}
-        className="w-full min-h-[90px] rounded border p-2 text-gray-900"
+        className="w-full min-h-[90px] rounded border dark:border-gray-700 p-2 text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-900 placeholder:text-gray-500 dark:placeholder:text-gray-400"
       />
 
       <div className="flex items-center gap-2">

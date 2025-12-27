@@ -29,6 +29,7 @@ import { BEE_URL, POSTAGE_BATCH_ID } from "@/config/swarm";
 import ProfileView from "./ProfileView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { ErrorModal } from "@/components/ui/ErrorModal";
 import { FEED_NS } from "@/lib/swarm-core/topics";
 import { useProfile } from "@/lib/profile/context";
 import { apiUrl } from "@/config/api";
@@ -37,6 +38,8 @@ import { apiUrl } from "@/config/api";
 // - Web3  → parent wallet address (NOT the safe)
 // - Local → main address derived from local PK
 import usePostingIdentity from "@/lib/auth/usePostingIdentity";
+import { useWalletConnection } from "@/lib/wallet/useWalletConnection";
+import WalletWarningBanner from "@/components/wallet/WalletWarningBanner";
 
 function to64Hex(s: string | null | undefined): string {
   if (!s) throw new Error("missing ref")
@@ -77,21 +80,31 @@ async function postProfile(body: unknown): Promise<{ ok: true; owner: Hex0x } | 
 
 export default function ProfileTab() {
   const bee = useMemo(() => new Bee(BEE_URL), []);
-  const { applyLocalUpdate, ensureFresh } = useProfile();
+  const { applyLocalUpdate } = useProfile();
 
   // Form state
   const [displayName, setDisplayName] = useState("");
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [showPreviewInProfile, setShowPreviewInProfile] = useState(false); // Only show in ProfileView after save click
 
   // UI state
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const [version, setVersion] = useState(0);
+  // Upload status for badge
+  const [uploadStatus, setUploadStatus] = useState<'idle' | 'uploading' | 'success' | 'error'>('idle');
 
-  // Platform signer’s feed owner (WITH 0x, returned by the server after each POST)
+  // Debug: Log uploadStatus changes
+  useEffect(() => {
+    console.log('[ProfileTab] uploadStatus changed to:', uploadStatus);
+  }, [uploadStatus]);
+
+  // Error modal state
+  const [showErrorModal, setShowErrorModal] = useState(false);
+
+  // Platform signer's feed owner (WITH 0x, returned by the server after each POST)
   const [owner0x, setOwner0x] = useState<Hex0x | null>(null);
 
   // Active user account (subject) loaded from localStorage (created on the Account/Home screens)**
@@ -102,13 +115,6 @@ export default function ProfileTab() {
       const cached = localStorage.getItem("woco.owner0x") as Hex0x | null;
       if (cached && cached.startsWith("0x")) setOwner0x(cached);
     } catch { /* ignore */ }
-  }, []);
-
-  // Force the read panel (<ProfileView key=...>) to remount on profile updates
-  useEffect(() => {
-    const onUpdated = () => setVersion(v => v + 1);
-    window.addEventListener("profile:updated", onUpdated);
-    return () => window.removeEventListener("profile:updated", onUpdated);
   }, []);
   
 
@@ -122,6 +128,9 @@ export default function ProfileTab() {
   // - Web3  → parent wallet address (NOT the safe)
   // - Local → main address derived from local PK
   const id = usePostingIdentity();
+
+  // Wallet connection monitoring (for Web3 users only)
+  const wallet = useWalletConnection();
 
   /**
    * Subject resolution (single source of truth)
@@ -168,6 +177,10 @@ export default function ProfileTab() {
     } catch { /* ignore */ }
   }, [id?.ready, subject0x]);
 
+  // ✅ REMOVED: Background verification on page load
+  // Reason: Causes confusing "Backing up to Swarm" badge when not uploading
+  // The profile loads optimistically from cache (handled by ProfileProvider)
+  // Verification only happens during actual uploads (see handleSave below)
 
   // Avatar preview when user picks a file
   function onPickFile(e: ChangeEvent<HTMLInputElement>) {
@@ -182,9 +195,24 @@ export default function ProfileTab() {
 
   async function onSave(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+
+    // ✅ CRITICAL: Prevent duplicate submissions while upload is in progress
+    if (busy) {
+      console.log('[profile] Save already in progress, ignoring duplicate click');
+      return;
+    }
+
+    // Layer 3: Check wallet connection before saving profile (Web3 users only)
+    if (id.kind === "web3" && wallet.isConnected === false) {
+      setErr("Your wallet is disconnected. Please reconnect your wallet to save your profile.");
+      setShowErrorModal(true);
+      return;
+    }
+
     setErr(null);
     setSaved(false);
     setBusy(true);
+    setUploadStatus('uploading');
 
     try {
       if (!POSTAGE_BATCH_ID) throw new Error("Set NEXT_PUBLIC_POSTAGE_BATCH_ID in .env.local");
@@ -193,8 +221,23 @@ export default function ProfileTab() {
       // Compute once, reuse in both blocks (name + avatar)
       const subjectNo0x = subject0x.slice(2).toLowerCase();
 
-      // (1) Save display name (optional) → topic keyed by subject
+      // ✅ OPTIMISTIC: Update UI immediately BEFORE uploading
       const nameToSave = displayName.trim();
+      const avatarFile = fileRef.current?.files?.[0] ?? null;
+
+      // Track what we uploaded for verification later
+      let uploadedAvatarRef: string | null = null;
+
+      if (nameToSave) {
+        applyLocalUpdate({ name: nameToSave });
+      }
+
+      // ✅ OPTIMISTIC: Show avatar preview NOW (when user clicks save)
+      if (previewUrl && avatarFile) {
+        setShowPreviewInProfile(true);
+      }
+
+      // (1) Save display name (optional) → topic keyed by subject
       if (nameToSave) {
         const { owner } = await postProfile({
           kind: "name",
@@ -204,30 +247,8 @@ export default function ProfileTab() {
         // NEW: persist owner so ProfileProvider can see it on mount
         try { localStorage.setItem("woco.owner0x", owner); } catch {}
 
-      // 1) Update in-state profile immediately (no extra network read)
-      applyLocalUpdate({ name: nameToSave });
-
-      // 2) Persist local cache for other screens (unchanged)
-      try {
-        const key = `woco.profile.${subject0x.toLowerCase()}`;
-        const prev = JSON.parse(localStorage.getItem(key) || "{}");
-        localStorage.setItem(
-          key,
-          JSON.stringify({ ...prev, name: nameToSave, updatedAt: Date.now() })
-        );
-      } catch { /* ignore */ }
-
-      // 3) (optional) clear the input so it feels saved
-      // setDisplayName("");
-
-      // 4) force the read panel to remount (you already listen for this)
-      window.dispatchEvent(new Event("profile:updated"));
-
-      // 5) Give Bee a moment, then re-read the feed so state converges to "live"
-      //    Safe: the *old* feed payload will have the same marker as before,
-      //    so it won't overwrite your freshly applied local state.
-      setTimeout(() => { void ensureFresh(); }, 1200);
-      setTimeout(() => { void ensureFresh(); }, 3000);
+        // ✅ No need for manual caching - applyLocalUpdate() already did it above
+        // ProfileProvider persists to localStorage automatically via its useEffect
 
       // DEBUG: feed GET for the name (topic derived from SUBJECT)
       const topicStr = `${FEED_NS}/name/${subjectNo0x}`;
@@ -242,11 +263,11 @@ export default function ProfileTab() {
     }
 
       // (2) Upload avatar (if chosen) → immutable BZZ ref → save avatar feed for SUBJECT
-      const file = fileRef.current?.files?.[0] ?? null;
-      if (file) {
-        const uploadRes = await bee.uploadFile(POSTAGE_BATCH_ID, file, file.name);
+      if (avatarFile) {
+        const uploadRes = await bee.uploadFile(POSTAGE_BATCH_ID, avatarFile, avatarFile.name);
         const imageRefHex = uploadRes.reference.toHex();
         const cleanRef = to64Hex(imageRefHex); // <-- ensure exactly 64-hex
+        uploadedAvatarRef = cleanRef; // Save for verification
 
         console.log("[profile] avatar uploaded (immutable BZZ)", {
           imageRefHex: cleanRef,
@@ -258,28 +279,15 @@ export default function ProfileTab() {
           payload: { imageRef: cleanRef, subject: subject0x }
         });
         setOwner0x(owner);
-        // NEW
         try { localStorage.setItem("woco.owner0x", owner); } catch {}
 
-        // 1) Switch UI to the new ref immediately (no extra read)
+        // Update to real Swarm reference (replaces preview)
         applyLocalUpdate({ avatarRef: cleanRef, avatarMarker: Date.now().toString(16) });
 
-        // 2) Clear preview + input (optional but avoids confusion)
+        // Clear preview state + input (ProfileView will now show Swarm URL)
         setPreviewUrl(null);
+        setShowPreviewInProfile(false);
         if (fileRef.current) fileRef.current.value = "";
-
-        // 3) Persist cache for other screens (unchanged)
-        try {
-          const key = `woco.profile.${subject0x.toLowerCase()}`;
-          const prev = JSON.parse(localStorage.getItem(key) || "{}");
-          localStorage.setItem(key, JSON.stringify({ ...prev, avatarRef: cleanRef, updatedAt: Date.now() }));
-        } catch { /* ignore */ }
-
-        window.dispatchEvent(new Event("profile:updated"));
-
-        // 4) Give Bee a moment, then re-read the feed so state converges to "live"
-        setTimeout(() => { void ensureFresh(); }, 1200);
-        setTimeout(() => { void ensureFresh(); }, 3000);
 
         // DEBUG: feed GET for the avatar (topic derived from SUBJECT)
         const topicStr = `${FEED_NS}/avatar/${subjectNo0x}`;
@@ -293,10 +301,87 @@ export default function ProfileTab() {
         });
       }
 
+      // ✅ OPTIMISTIC: Profile updated immediately (via applyLocalUpdate above)
+      // Now back up to Swarm in background and verify
       setSaved(true);
+
+      // ✅ Background verification with retry logic (fast: 1-4s instead of 10-12s)
+      (async () => {
+        try {
+          // If no avatar was uploaded, name-only updates succeed immediately
+          if (!uploadedAvatarRef) {
+            console.log('[profile] ✅ Name-only update completed');
+            setUploadStatus('success');
+            // No need to dispatch profile:updated - applyLocalUpdate already updated ProfileProvider
+            return;
+          }
+
+          // Avatar was uploaded - show "Backing up to Swarm..." and verify
+          setUploadStatus('uploading');
+          console.log('[profile] Starting Swarm backup verification...');
+
+          // Step 1: Verify image is retrievable (with retry for network propagation)
+          console.log('[profile] Verifying image accessibility...');
+          const avatarUrl = `${BEE_URL}/bzz/${uploadedAvatarRef}`;
+
+          // Retry with exponential backoff: 0ms, 500ms, 1s, 2s
+          let imageAccessible = false;
+          for (let attempt = 0; attempt < 4; attempt++) {
+            if (attempt > 0) {
+              const delay = Math.pow(2, attempt - 1) * 500;
+              console.log(`[profile] Retry ${attempt}/3 after ${delay}ms...`);
+              await new Promise(r => setTimeout(r, delay));
+            }
+
+            const check = await fetch(avatarUrl, { method: 'HEAD' });
+            if (check.ok) {
+              imageAccessible = true;
+              console.log(`[profile] ✅ Image verified on Swarm (attempt ${attempt + 1})`);
+              break;
+            }
+          }
+
+          if (!imageAccessible) {
+            console.error('[profile] ⚠️ Image not accessible on Swarm after retries');
+            setUploadStatus('error');
+            return;
+          }
+
+          // Step 2: Verify feed points to new image (OPTIONAL - don't fail if this errors)
+          try {
+            console.log('[profile] Verifying feed update...');
+            const avatarTopic = Topic.fromString(`${FEED_NS}/avatar/${subjectNo0x}`);
+            const feedReader = bee.makeFeedReader(avatarTopic, owner0x as `0x${string}`);
+            const latest = await feedReader.downloadReference();
+            const currentFeedRef = latest.reference.toHex().toLowerCase();
+            const expectedRef = uploadedAvatarRef.toLowerCase();
+
+            if (currentFeedRef !== expectedRef) {
+              console.warn('[profile] Feed pointing to different image (may still be propagating):', { currentFeedRef, expectedRef });
+            } else {
+              console.log('[profile] ✅ Feed verified pointing to new image');
+            }
+          } catch (feedErr) {
+            // Feed verification is optional - it may 404 if feed hasn't propagated yet
+            console.warn('[profile] Feed verification skipped (propagation delay or 404):', feedErr instanceof Error ? feedErr.message : feedErr);
+          }
+
+          // Success - image is accessible (feed check is optional bonus)
+          console.log('[profile] ✅ Backup verified, profile saved to Swarm');
+          setUploadStatus('success');
+
+          // No need to dispatch profile:updated - applyLocalUpdate already updated ProfileProvider
+          // and ProfileProvider auto-persists to localStorage. Dashboard has its own verification.
+        } catch (verifyErr) {
+          console.error('[profile] ⚠️ Swarm backup verification failed:', verifyErr);
+          setUploadStatus('error');
+        }
+      })();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setErr(msg);
+      setUploadStatus('error');
+      setShowErrorModal(true); // Show error modal on failure
     } finally {
       setBusy(false);
     }
@@ -304,14 +389,32 @@ export default function ProfileTab() {
 
   return (
     <div className="w-full max-w-2xl mx-auto p-4 space-y-6">
+      {/* Error Modal */}
+      <ErrorModal
+        isOpen={showErrorModal}
+        onClose={() => {
+          setShowErrorModal(false);
+          setUploadStatus('idle');
+        }}
+        title="Profile Upload Failed"
+        message={err || "An error occurred while uploading your profile to Swarm. Please try again."}
+        redirectTo="/profile"
+        redirectLabel="Stay on Profile"
+      />
+
+      {/* Wallet disconnected warning (Web3 users only) */}
+      {id.kind === "web3" && wallet.isConnected === false && (
+        <WalletWarningBanner onReconnect={wallet.reconnect} />
+      )}
+
       {/* Write panel */}
-      <div className="rounded border p-4 bg-white/80">
-        <div className="font-semibold text-gray-900 mb-2">Create / Update Profile (platform signer → per-user topics)</div>
+      <div className="rounded border dark:border-gray-700 p-4 bg-white/80 dark:bg-gray-800/90">
+        <div className="font-semibold text-gray-900 dark:text-gray-100 mb-2">Create / Update Profile (platform signer → per-user topics)</div>
 
         <form onSubmit={onSave} className="space-y-4">
           {/* Display name */}
           <div>
-            <label className="block text-sm text-gray-900 mb-1">Display name</label>
+            <label className="block text-sm text-gray-900 dark:text-gray-100 mb-1">Display name</label>
             <Input
               value={displayName}
               onChange={(e: ChangeEvent<HTMLInputElement>) => setDisplayName(e.target.value)}
@@ -321,7 +424,7 @@ export default function ProfileTab() {
 
           {/* Avatar picker + preview */}
           <div className="space-y-2">
-            <label className="block text-sm text-gray-900">Avatar (optional)</label>
+            <label className="block text-sm text-gray-900 dark:text-gray-100">Avatar (optional)</label>
             <input
               ref={fileRef}
               type="file"
@@ -366,10 +469,49 @@ export default function ProfileTab() {
       </div>
 
       {/* Read panel (renders from in-state; zero network calls here) */}
-      <div className="rounded border p-4 bg-white/80">
-        <div className="font-semibold text-gray-900 mb-2">Current Profile (in-state)</div>
+      <div className="rounded border dark:border-gray-700 p-4 bg-white/80 dark:bg-gray-800/90">
+        <div className="font-semibold text-gray-900 dark:text-gray-100 mb-2">Current Profile (in-state)</div>
         {owner0x && subject0x ? (
-          <ProfileView key={`${subject0x}|${version}`} subject={subject0x} feedOwner={owner0x} />
+          <>
+            <ProfileView
+              key={subject0x}
+              subject={subject0x}
+              feedOwner={owner0x}
+              previewUrl={showPreviewInProfile ? previewUrl : null}
+              disableAutoRefresh={true}
+            />
+
+            {/* Upload/Verification Status Badge (below profile) */}
+            {uploadStatus !== 'idle' && (
+              <div className="mt-3">
+                {uploadStatus === 'uploading' && (
+                  <div className="bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 text-blue-800 dark:text-blue-200 px-3 py-2 rounded-lg flex items-center gap-2">
+                    <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <span className="text-sm font-medium">Backing up to Swarm...</span>
+                  </div>
+                )}
+                {uploadStatus === 'success' && (
+                  <div className="bg-green-100 dark:bg-green-900/30 border border-green-300 dark:border-green-700 text-green-800 dark:text-green-200 px-3 py-2 rounded-lg flex items-center gap-2">
+                    <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                    <span className="text-sm font-medium">✓ Backed up to Swarm</span>
+                  </div>
+                )}
+                {uploadStatus === 'error' && (
+                  <div className="bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 text-red-800 dark:text-red-200 px-3 py-2 rounded-lg flex items-center gap-2">
+                    <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                    </svg>
+                    <span className="text-sm font-medium">Backup failed</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </>
         ) : (
           <p className="text-sm text-gray-500">
             Save first (needs platform feed owner and an active user account).

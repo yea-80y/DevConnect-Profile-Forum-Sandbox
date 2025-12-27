@@ -182,11 +182,11 @@ export function PostItem(props: {
   }
 
   return (
-    <div className="rounded border p-3 bg-white/90 flex gap-3">
+    <div className="rounded border dark:border-gray-700 p-3 bg-white/90 dark:bg-gray-800/90 flex gap-3">
       {/* Avatar: always render a solid placeholder behind the image. */}
       <div className="relative w-11 h-11">
         {/* Placeholder background (never unmounts) */}
-        <div className="absolute inset-0 rounded-full bg-gray-200 border" />
+        <div className="absolute inset-0 rounded-full bg-gray-200 dark:bg-gray-700 border dark:border-gray-600" />
 
         {src && (
           <NextImage
@@ -212,15 +212,15 @@ export function PostItem(props: {
       {/* Main content */}
       <div className="flex-1">
         <div className="flex items-center gap-2">
-          <div className="text-sm font-semibold text-gray-900">{displayName ?? "(anon)"}</div>
-          <div className="text-[11px] text-gray-500 break-all">· {author}</div>
-          <div className="ml-auto text-[11px] text-gray-400">
+          <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">{displayName ?? "(anon)"}</div>
+          <div className="text-[11px] text-gray-500 dark:text-gray-400 break-all">· {author}</div>
+          <div className="ml-auto text-[11px] text-gray-400 dark:text-gray-500">
             {createdAt ? new Date(createdAt).toLocaleString() : ""}
           </div>
         </div>
 
-        <div className="text-sm text-gray-900 whitespace-pre-wrap mt-1">{content}</div>
-        <div className="text-[10px] text-gray-400 break-all mt-2">ref: {refHex}</div>
+        <div className="text-sm text-gray-900 dark:text-gray-300 whitespace-pre-wrap mt-1">{content}</div>
+        <div className="text-[10px] text-gray-400 dark:text-gray-500 break-all mt-2">ref: {refHex}</div>
 
         {/* Root post: show reply badge + Mute (as thread) */}
         {isRoot && boardId && threadRef && (

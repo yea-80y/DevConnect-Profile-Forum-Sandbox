@@ -1,12 +1,13 @@
 // components/auth/LoginScreen.tsx
 "use client"
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import usePostingIdentity from "@/lib/auth/usePostingIdentity";
 import { Button } from "@/components/ui/button";
 import { apiUrl } from "@/config/api";
+import ThemeToggle from "@/components/ThemeToggle";
 
 // Minimal EIP-1193 type so we don't use `any`
 interface EIP1193Provider {
@@ -70,6 +71,21 @@ export default function LoginScreen() {
   // NEW: track which flow is in progress (web3 only; local remains as-is)
   const [authing, setAuthing] = useState<"none" | "web3">("none");
 
+  // Auto-navigate when auth state is ready (waits for React state to propagate)
+  // ⚠️ MUST be before early return to satisfy Rules of Hooks
+  useEffect(() => {
+    // Web3: wait for parent-bound state to confirm parent address is set
+    if (id.ready && id.kind === "web3" && id.postAuth === "parent-bound" && authing === "web3") {
+      router.push("/dashboard/");
+      return;
+    }
+    // Local: navigate as soon as kind is set
+    if (id.ready && id.kind === "local" && isBusy) {
+      router.push("/dashboard/");
+      return;
+    }
+  }, [id.ready, id.kind, id.postAuth, authing, isBusy, router]);
+
   // Keep the UI quiet while rehydrating
   if (!id.ready) {
     return <div className="rounded border p-4 bg-white/90">Loading…</div>;
@@ -82,6 +98,11 @@ export default function LoginScreen() {
 
   return (
     <div className="space-y-8 max-w-3xl mx-auto">
+      {/* Dark mode toggle - top right */}
+      <div className="flex justify-end mb-4">
+        <ThemeToggle />
+      </div>
+
       {/* Hero Section with Logo */}
       <div className="text-center space-y-4">
         <div className="flex justify-center mb-6">
@@ -96,37 +117,47 @@ export default function LoginScreen() {
           />
         </div>
 
-        <h1 className="text-3xl font-bold text-gray-900">
+        <h1 className="text-3xl sm:text-4xl font-bold text-gray-900 dark:text-gray-100">
           Welcome to WoCo — The World Computer
         </h1>
 
-        <p className="text-lg text-gray-600 font-medium">
+        <p className="text-lg text-gray-600 dark:text-gray-300 font-medium">
           Privacy-First, Peer-to-Peer Infrastructure for the Open Web
         </p>
 
-        <div className="text-left bg-white/90 rounded-xl border p-6 space-y-3">
-          <p className="text-sm text-gray-700">
+        {/* Recent Updates Banner */}
+        <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700 rounded-xl p-4 text-center">
+          <p className="text-sm font-semibold text-blue-900 dark:text-blue-100">
+            📢 Recent Updates (Dec 25)
+          </p>
+          <p className="text-xs text-blue-800 dark:text-blue-200 mt-1">
+            POD collectibles now live - create & claim limited editions • Dark mode with preference saving • Enhanced Swarm verification
+          </p>
+        </div>
+
+        <div className="text-left bg-white/90 dark:bg-gray-800/90 rounded-xl border dark:border-gray-700 p-6 space-y-3">
+          <p className="text-sm text-gray-700 dark:text-gray-300">
             Connect with your Web3 wallet (MetaMask, Trust Wallet, etc.) or create a new account
             to experience the future of decentralized social platforms.
           </p>
 
-          <p className="text-sm font-semibold text-gray-800">Once connected, you can:</p>
-          <ul className="text-sm text-gray-700 space-y-1 list-disc list-inside ml-2">
+          <p className="text-sm font-semibold text-gray-800 dark:text-gray-200">Once connected, you can:</p>
+          <ul className="text-sm text-gray-700 dark:text-gray-300 space-y-1 list-disc list-inside ml-2">
             <li>Create your profile with a custom avatar and display name</li>
-            <li>Participate in community discussions through our decentralized forum</li>
-            <li>Store your data on the Swarm Network—no central servers, complete user sovereignty</li>
-            <li>Experience true digital ownership and privacy-preserving interactions</li>
+            <li>Post and reply to messages on our decentralised forum</li>
+            <li>Your data is stored on the Swarm Network—no centralised servers</li>
+            <li>Experience true digital ownership with POD based collectibles</li>
           </ul>
         </div>
       </div>
 
       {/* Login Buttons Section */}
-      <div className="rounded-xl border p-6 bg-white/90 space-y-4">
-        <div className="text-sm font-semibold text-gray-900">Sign in</div>
+      <div className="rounded-xl border dark:border-gray-700 p-6 bg-white/90 dark:bg-gray-800/90 space-y-4">
+        <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">Sign in</div>
 
         {/* Web3-only progress banner */}
         {authing === "web3" && id.postAuth !== "parent-bound" && (
-          <div className="rounded border p-3 bg-amber-50/70 text-sm" aria-live="polite">
+          <div className="rounded border dark:border-amber-700 p-3 bg-amber-50/70 dark:bg-amber-900/30 text-sm dark:text-amber-100" aria-live="polite">
             Authorizing… please confirm in your wallet.
           </div>
         )}
@@ -148,14 +179,12 @@ export default function LoginScreen() {
 
                   // Now run the 712 flow
                   const ok = await id.startWeb3Login();
-                  if (ok) {
-                    router.push("/dashboard/");
-                    return;
+                  if (!ok) {
+                    // user canceled / failed verification → allow another attempt
+                    setIsBusy(false);
+                    setAuthing("none");
                   }
-
-                  // user canceled / failed verification → allow another attempt
-                  setIsBusy(false);
-                  setAuthing("none");
+                  // ✅ Success: useEffect will handle navigation when state propagates
                 } catch {
                   setIsBusy(false);
                   setAuthing("none");
@@ -174,12 +203,10 @@ export default function LoginScreen() {
                 setIsBusy(true);
                 try {
                   const ok = await id.startLocalLogin();
-                  if (ok) {
-                    router.push("/dashboard/");
-                    return;
-                  } else {
+                  if (!ok) {
                     setIsBusy(false);
                   }
+                  // ✅ Success: useEffect will handle navigation when state propagates
                 } catch {
                   setIsBusy(false);
                 }
@@ -192,7 +219,7 @@ export default function LoginScreen() {
 
         {/* Tiny status hint (optional) */}
         {id.safe && (
-          <div className="text-xs text-gray-700">
+          <div className="text-xs text-gray-700 dark:text-gray-400">
             Posting key ready at <code>{id.safe.slice(0, 6)}…{id.safe.slice(-4)}</code>
             {id.kind === "web3" && id.postAuth === "parent-bound" ? " (parent-bound)" : ""}
           </div>
@@ -200,15 +227,15 @@ export default function LoginScreen() {
       </div>
 
       {/* Technology & Vision Section */}
-      <div className="bg-white/90 rounded-xl border p-6 space-y-6 text-sm">
+      <div className="bg-white/90 dark:bg-gray-800/90 rounded-xl border dark:border-gray-700 p-6 space-y-6 text-sm">
         <div>
-          <h2 className="text-lg font-bold text-gray-900 mb-3">🦾 Built on Decentralized Infrastructure</h2>
-          <p className="text-gray-700 mb-3">
+          <h2 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-3">🦾 Built on Decentralized Infrastructure</h2>
+          <p className="text-gray-700 dark:text-gray-300 mb-3">
             WoCo harnesses Swarm Network for distributed storage and Ethereum standards (EIP-712/EIP-191)
             for secure, cryptographic authentication. Every post, profile, and piece of content lives on a
             peer-to-peer network—not corporate servers.
           </p>
-          <p className="text-gray-700">
+          <p className="text-gray-700 dark:text-gray-300">
             This prototype demonstrates how privacy-focused, censorship-resistant platforms can be built
             on Web3 infrastructure, putting users in control of their data and identity. The goal isn&apos;t
             just decentralization for its own sake—it&apos;s about building tools that shift ownership and
@@ -217,40 +244,45 @@ export default function LoginScreen() {
         </div>
 
         <div>
-          <h2 className="text-lg font-bold text-gray-900 mb-3">🎯 Our Mission</h2>
-          <p className="text-gray-700 mb-3">
+          <h2 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-3">🎯 Our Mission</h2>
+          <p className="text-gray-700 dark:text-gray-300 mb-3">
             WoCo aims to prove that peer-to-peer and zero-knowledge technologies can fundamentally change
             how people interact online. We&apos;re building open-source tools—not empires—governed by the
             principle of &quot;by the community, for the community.&quot;
           </p>
-          <p className="text-gray-700 mb-4">
-            Future iterations will integrate Waku for private P2P communication and zero-knowledge proofs
-            (PODs) for verifiable credentials and enhanced privacy. From event tickets to digital
-            collectibles, loyalty programs to content access—all while preserving user sovereignty.
-          </p>
 
-          <div className="pt-4 border-t space-y-2">
+          <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700 rounded-lg">
+            <p className="text-sm font-semibold text-blue-900 dark:text-blue-100 mb-2">🚀 Next Steps</p>
+            <ul className="text-xs text-blue-800 dark:text-blue-200 space-y-1 list-disc list-inside">
+              <li>Enhance forum with improved loading, caching, and rendering performance.</li>
+              <li>Expand POD capabilities: event tickets, loyalty points, and achievement badges.</li>
+              <li>Enable simple Web2 access through an email login option.</li>
+              <li>Support additional authentication options for Web3 users.</li>
+            </ul>
+          </div>
+
+          <div className="pt-4 border-t dark:border-gray-700 space-y-2">
             <a
               href="https://github.com/yea-80y/DevConnect-Profile-Forum-Sandbox"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-blue-600 hover:text-blue-700 underline block"
+              className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 underline block"
             >
               📚 Learn more on GitHub
             </a>
 
             <a
-              href="https://discord.gg/9DpWPUPY"
+              href="https://discord.gg/tPxAK5WHcb"
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-2 text-purple-600 hover:text-purple-700 underline"
+              className="flex items-center gap-2 text-purple-600 dark:text-purple-400 hover:text-purple-700 dark:hover:text-purple-300 underline"
             >
               <Image
                 src={`${process.env.NEXT_PUBLIC_BASE_PATH || ''}/discord-icon.svg`}
                 unoptimized
                 alt="Discord"
-                width={16}
-                height={16}
+                width={43}
+                height={43}
                 className="inline-block"
               />
               <span>🐛 Please report bugs on our Discord</span>

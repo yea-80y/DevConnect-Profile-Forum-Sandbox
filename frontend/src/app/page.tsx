@@ -25,17 +25,25 @@ export default function RootGate() {
   }, [id.ready, id.kind, id.postAuth, router]);
 
   if (!id.ready) {
-    return <div className="rounded border p-4 bg-white/90">Loading…</div>;
+    return (
+      <div className="min-h-dvh bg-neutral-50 dark:bg-gray-900 transition-colors flex items-center justify-center">
+        <div className="rounded border dark:border-gray-700 p-4 bg-white/90 dark:bg-gray-800/90 text-gray-900 dark:text-gray-100">
+          Loading…
+        </div>
+      </div>
+    );
   }
 
   const canEnter =
     id.kind === "local" || (id.kind === "web3" && id.postAuth === "parent-bound");
 
-  // If signed-in, we’re about to redirect → render nothing to avoid flicker.
+  // If signed-in, we're about to redirect → render nothing to avoid flicker.
   // If not signed-in, show the login screen.
   return canEnter ? null : (
-    <main className="mx-auto max-w-xl p-4">
-      <LoginScreen />
+    <main className="min-h-dvh bg-neutral-50 dark:bg-gray-900 transition-colors">
+      <div className="mx-auto max-w-xl p-4">
+        <LoginScreen />
+      </div>
     </main>
   );
 }

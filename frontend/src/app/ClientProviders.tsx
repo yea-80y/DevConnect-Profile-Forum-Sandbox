@@ -8,9 +8,10 @@
  * and exposes { isAdmin, address } via useMe().
  */
 
-import { ReactNode, useEffect, useState, createContext, useContext, useMemo } from "react";
+import { ReactNode, useEffect, useState, createContext, useContext, useMemo, useCallback } from "react";
 import { ProfileProvider } from "@/lib/profile/context";
 import usePostingIdentity from "@/lib/auth/usePostingIdentity";
+import { useInactivityTimeout } from "@/lib/auth/useInactivityTimeout";
 import { apiUrl } from "@/config/api";
 
 type HexAddr = `0x${string}` | null;
@@ -41,7 +42,6 @@ export function useMe() {
 }
 
 export default function ClientProviders({ children }: { children: ReactNode }) {
-
   // feedOwner: platform signer address (owner of the profile feed)
   const [feedOwner, setFeedOwner] = useState<HexAddr>(null);
 
@@ -57,11 +57,52 @@ export default function ClientProviders({ children }: { children: ReactNode }) {
  // 🔁 Single source of truth for identity
   const id = usePostingIdentity();
 
+  /**
+   * Auto-logout on inactivity (Web3 desktop users only)
+   */
+  const handleInactivityTimeout = useCallback(async () => {
+    try {
+      // Clear localStorage first (preserve theme preference)
+      try {
+        const keys = Object.keys(localStorage);
+        keys.forEach(key => {
+          if (key === 'woco.theme') return; // Preserve theme preference
+          if (key.startsWith('profile:') || key.startsWith('woco.')) {
+            localStorage.removeItem(key);
+          }
+        });
+      } catch {}
+
+      await id.logout();
+
+      try {
+        await fetch(apiUrl("/api/auth/logout"), { method: "POST" });
+      } catch {}
+
+      // Force full page reload to ensure IndexedDB writes commit
+      // Use base path to ensure redirect works on Swarm deployment
+      const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+      window.location.href = basePath ? `${basePath}/` : "/";
+    } catch (e) {
+      console.error("[inactivity] Logout failed", e);
+    }
+  }, [id]);
+
+  // Enable inactivity timeout only for Web3 users
+  useInactivityTimeout(
+    handleInactivityTimeout,
+    30 * 60 * 1000, // 30 minutes
+    id.kind === "web3" // Only enabled for Web3 users
+  );
+
   // subject: parent (web3) or safe (local) — validated
   const subject = useMemo<HexAddr>(() => {
-    if (!id.ready) return null;
+    if (!id.ready) {
+      return null;
+    }
     const addr = id.kind === "web3" ? id.parent : id.safe;
-    return addr && /^0x[0-9a-fA-F]{40}$/.test(addr) ? (addr as `0x${string}`) : null;
+    const result = addr && /^0x[0-9a-fA-F]{40}$/.test(addr) ? (addr as `0x${string}`) : null;
+    return result;
   }, [id.ready, id.kind, id.parent, id.safe]);
 
   // Bump when auth/account changes so ProfileProvider remounts and re-runs its cold-start refresh

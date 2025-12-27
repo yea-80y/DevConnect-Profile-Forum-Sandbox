@@ -113,3 +113,46 @@ export async function refreshProfileFromSwarm(opts: {
   // If nothing changed, return `prev` to preserve identity (no re-render).
   return changed ? next : prev;
 }
+
+/**
+ * Lightweight avatar verification (dashboard background check).
+ * Only reads the avatar feed (not name) to verify cached image hash matches Swarm.
+ * Returns: { verified: boolean, feedHash: string | null }
+ *
+ * Use this for fast background verification (~7-8s instead of 15-16s).
+ */
+export async function verifyAvatarOnSwarm(opts: {
+  beeUrl: string;
+  feedOwner: Hex0x;
+  subject: Hex0x;
+  cachedAvatarRef: string | null; // the hash we expect to find
+}): Promise<{ verified: boolean; feedHash: string | null }> {
+  const { beeUrl, feedOwner, subject, cachedAvatarRef } = opts;
+
+  if (!cachedAvatarRef) {
+    return { verified: false, feedHash: null };
+  }
+
+  try {
+    const bee = new Bee(beeUrl);
+    const subjectNo0x = subject.slice(2).toLowerCase();
+    const avatarTopic = Topic.fromString(`${FEED_NS}/avatar/${subjectNo0x}`);
+
+    // Read avatar feed to get the hash it points to
+    const res = await bee.makeFeedReader(avatarTopic, feedOwner).downloadPayload();
+    const text = res.payload.toUtf8();
+    const obj = tryJson(text);
+    const feedHash = pickAvatarRefFromPayload(obj ?? text);
+
+    if (!feedHash) {
+      return { verified: false, feedHash: null };
+    }
+
+    // Check if feed hash matches cached hash
+    const verified = feedHash.toLowerCase() === cachedAvatarRef.toLowerCase();
+    return { verified, feedHash };
+  } catch {
+    // Feed may not exist yet or network error
+    return { verified: false, feedHash: null };
+  }
+}

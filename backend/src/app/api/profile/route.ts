@@ -156,7 +156,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "Unknown kind" }, { status: 400 });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error("[api/profile]", e);
+    console.error("[api/profile POST] Error:", e);
+    console.error("[api/profile POST] Stack:", e instanceof Error ? e.stack : 'no stack');
     return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }
@@ -170,23 +171,28 @@ export async function POST(req: Request) {
 // - Returns { ok, owner, subject?, name?, avatarRef? }
 // - Sends Cache-Control: no-store to avoid stale reads in dev
 export async function GET(req: Request) {
-  // Basic env guards
-  if (!FEED_PRIVATE_KEY) {
-    return NextResponse.json(
-      { ok: false, error: "Missing FEED_PRIVATE_KEY" },
-      { status: 500, headers: { "Cache-Control": "no-store" } }
-    );
-  }
-  if (!BEE_URL) {
-    return NextResponse.json(
-      { ok: false, error: "Missing BEE_URL" },
-      { status: 500, headers: { "Cache-Control": "no-store" } }
-    );
-  }
+  try {
+    console.log("[api/profile GET] Starting...");
+    console.log("[api/profile GET] BEE_URL:", BEE_URL);
+    console.log("[api/profile GET] FEED_PRIVATE_KEY exists:", !!FEED_PRIVATE_KEY);
 
-  // Bee client + platform signer (feed owner that writes the per-user topics)
-  const bee = new Bee(BEE_URL);
-  const signer = new PrivateKey(normalizePk(FEED_PRIVATE_KEY));
+    // Basic env guards
+    if (!FEED_PRIVATE_KEY) {
+      return NextResponse.json(
+        { ok: false, error: "Missing FEED_PRIVATE_KEY" },
+        { status: 500, headers: { "Cache-Control": "no-store" } }
+      );
+    }
+    if (!BEE_URL) {
+      return NextResponse.json(
+        { ok: false, error: "Missing BEE_URL" },
+        { status: 500, headers: { "Cache-Control": "no-store" } }
+      );
+    }
+
+    // Bee client + platform signer (feed owner that writes the per-user topics)
+    const bee = new Bee(BEE_URL);
+    const signer = new PrivateKey(normalizePk(FEED_PRIVATE_KEY));
   const ownerAddr  = signer.publicKey().address();   // bee-js EthAddress object
   const ownerNo0x  = ownerAddr.toHex().toLowerCase(); // hex without 0x for topic strings
   const owner0x    = `0x${ownerNo0x}` as `0x${string}`; // hex with 0x for UI/API
@@ -255,9 +261,15 @@ export async function GET(req: Request) {
     }
 
     // Respond with the normalized fields used by your UI/PostItem fallback
+    // Cache for 5 minutes - profile data changes infrequently
     return NextResponse.json(
       { ok: true, owner: owner0x, subject: subject0x, name, avatarRef },
-      { headers: { "Cache-Control": "no-store" } }
+      {
+        headers: {
+          "Cache-Control": "public, max-age=300, stale-while-revalidate=600",
+          "CDN-Cache-Control": "public, max-age=300"
+        }
+      }
     );
   }
 
@@ -278,8 +290,25 @@ export async function GET(req: Request) {
     // no verify feed yet → fine
   }
 
-  return NextResponse.json(
-    { ok: true, owner: owner0x, user },
-    { headers: { "Cache-Control": "no-store" } }
-  );
+    console.log("[api/profile GET] Success, returning owner:", owner0x);
+    // Cache for 5 minutes (300s) to reduce redundant Swarm calls
+    // stale-while-revalidate allows instant cached response while revalidating in background
+    return NextResponse.json(
+      { ok: true, owner: owner0x, user },
+      {
+        headers: {
+          "Cache-Control": "public, max-age=300, stale-while-revalidate=600",
+          "CDN-Cache-Control": "public, max-age=300"
+        }
+      }
+    );
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[api/profile GET] Error:", e);
+    console.error("[api/profile GET] Stack:", e instanceof Error ? e.stack : 'no stack');
+    return NextResponse.json(
+      { ok: false, error: msg },
+      { status: 500, headers: { "Cache-Control": "no-store" } }
+    );
+  }
 }
