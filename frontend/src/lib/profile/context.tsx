@@ -154,19 +154,20 @@ export function ProfileProvider(props: {
   // Track if we've fetched for this subject yet (prevents duplicate fetches on same mount)
   const hasFetchedRef = useRef<string | null>(null);
 
+  // Reset fetch tracking when provider remounts (key change)
+  useEffect(() => {
+    hasFetchedRef.current = null;
+  }, [cacheKey]);
+
   // 2) Cold-start: fetch profile when we have valid subject + feedOwner
   // OPTIMIZATION: Skip for brand new LOCAL accounts (they can't have a profile yet)
   // CRITICAL: Web3 accounts ALWAYS fetch (isNewAccount flag cleared by startWeb3Login)
   useEffect(() => {
-    if (!subject || !feedOwner) {
-      return;
-    }
+    if (!subject || !feedOwner) return;
 
     // Skip if we've already fetched for this exact subject
     const fetchKey = `${feedOwner}:${subject}`;
-    if (hasFetchedRef.current === fetchKey) {
-      return;
-    }
+    if (hasFetchedRef.current === fetchKey) return;
 
     // Check if this is a brand new LOCAL account
     // ONLY skip Swarm fetch if:
@@ -196,6 +197,9 @@ export function ProfileProvider(props: {
 
     // Mark as fetched BEFORE starting the async operation
     hasFetchedRef.current = fetchKey;
+
+    // Emit event that profile load has started (for login screen)
+    window.dispatchEvent(new Event("profile:load-started"));
 
     void ensureFreshRef.current();
   }, [subject, feedOwner, profile]);
@@ -242,11 +246,14 @@ export function ProfileProvider(props: {
     // Reset profile in these cases:
     // 1. Logout: subject goes from valid → null
     // 2. Account switch: both were valid and changed
+    // 3. Initial login: subject goes from null → valid
     const isLogout = prev.subject !== null && subject === null;
     const isAccountSwitch =
       prev.subject !== null && prev.feedOwner !== null &&
       subject !== null && feedOwner !== null &&
       (prev.subject !== subject || prev.feedOwner !== feedOwner);
+    const isInitialLogin =
+      prev.subject === null && subject !== null && feedOwner !== null;
 
     if (isLogout) {
       // Logout: clear profile immediately
@@ -254,6 +261,9 @@ export function ProfileProvider(props: {
     } else if (isAccountSwitch) {
       // Account switch: clear and fetch new profile
       setProfile(null);
+      void ensureFresh();
+    } else if (isInitialLogin) {
+      // Initial login: fetch profile for new user
       void ensureFresh();
     }
 

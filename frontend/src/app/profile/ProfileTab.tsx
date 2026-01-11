@@ -33,6 +33,7 @@ import { ErrorModal } from "@/components/ui/ErrorModal";
 import { FEED_NS } from "@/lib/swarm-core/topics";
 import { useProfile } from "@/lib/profile/context";
 import { apiUrl } from "@/config/api";
+import { invalidateAvatarCache } from "@/lib/avatar";
 
 // NEW: source of truth for WHO the user is (subject).
 // - Web3  → parent wallet address (NOT the safe)
@@ -284,6 +285,9 @@ export default function ProfileTab() {
         // Update to real Swarm reference (replaces preview)
         applyLocalUpdate({ avatarRef: cleanRef, avatarMarker: Date.now().toString(16) });
 
+        // Invalidate avatar cache so forum shows new avatar immediately
+        invalidateAvatarCache(subject0x);
+
         // Clear preview state + input (ProfileView will now show Swarm URL)
         setPreviewUrl(null);
         setShowPreviewInProfile(false);
@@ -424,8 +428,10 @@ export default function ProfileTab() {
 
           {/* Avatar picker + preview */}
           <div className="space-y-2">
-            <label className="block text-sm text-gray-900 dark:text-gray-100">Avatar (optional)</label>
+            <label htmlFor="profile-avatar-upload" className="block text-sm text-gray-900 dark:text-gray-100">Avatar (optional)</label>
             <input
+              id="profile-avatar-upload"
+              name="profile-avatar"
               ref={fileRef}
               type="file"
               accept="image/*"

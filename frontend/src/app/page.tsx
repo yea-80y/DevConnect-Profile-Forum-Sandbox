@@ -14,15 +14,15 @@ export default function RootGate() {
   useEffect(() => {
     if (!id.ready || redirected.current) return;
 
-    const canEnter =
-      id.kind === "local" || (id.kind === "web3" && id.postAuth === "parent-bound");
+    // New logic: allow web3 users immediately after login (lazy signature loading)
+    const canEnter = id.kind === "local" || id.kind === "web3";
 
     if (canEnter) {
       redirected.current = true;
       // soft SPA redirect is fine here; no need for ?fresh=1
       router.replace("/dashboard/");
     }
-  }, [id.ready, id.kind, id.postAuth, router]);
+  }, [id.ready, id.kind, router]);
 
   if (!id.ready) {
     return (
@@ -34,8 +34,8 @@ export default function RootGate() {
     );
   }
 
-  const canEnter =
-    id.kind === "local" || (id.kind === "web3" && id.postAuth === "parent-bound");
+  // New logic: allow web3 users immediately after login (lazy signature loading)
+  const canEnter = id.kind === "local" || id.kind === "web3";
 
   // If signed-in, we're about to redirect → render nothing to avoid flicker.
   // If not signed-in, show the login screen.

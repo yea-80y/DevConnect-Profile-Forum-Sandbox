@@ -54,47 +54,57 @@ async function warmHandshake(): Promise<void> {
 
 
 /**
- * LoginScreen
- * - Web3: clicking the button triggers the EIP-712 capability flow.
+ * LoginScreen (Modular Auth with Lazy Signature Loading)
+ * - Web3: instant login (no signatures upfront!) - signatures requested later when needed
  * - Local: creates a local posting key (no wallet).
  *
- * IMPORTANT: we only navigate once the hook reports auth is usable:
- *   - Web3: postAuth === "parent-bound"
+ * IMPORTANT: we navigate immediately after login (instant access):
+ *   - Web3: kind === "web3" (posting capability requested later when user posts)
  *   - Local: kind === "local"
  */
 export default function LoginScreen() {
   const id = usePostingIdentity();
   const router = useRouter();
 
-  // (Optional) disable buttons while a sign flow is in progress
+  // (Optional) disable buttons while login is in progress
   const [isBusy, setIsBusy] = useState(false);
-  // NEW: track which flow is in progress (web3 only; local remains as-is)
-  const [authing, setAuthing] = useState<"none" | "web3">("none");
+  const [readyToNavigate, setReadyToNavigate] = useState(false);
 
-  // Auto-navigate when auth state is ready (waits for React state to propagate)
+  // Listen for profile load completion before navigating
+  useEffect(() => {
+    const handleProfileLoadStarted = () => {
+      console.log("[LoginScreen] Profile load started, ready to navigate");
+      setReadyToNavigate(true);
+    };
+
+    window.addEventListener("profile:load-started", handleProfileLoadStarted);
+    return () => window.removeEventListener("profile:load-started", handleProfileLoadStarted);
+  }, []);
+
+  // Auto-navigate when auth state is ready AND profile load has started
   // ⚠️ MUST be before early return to satisfy Rules of Hooks
   useEffect(() => {
-    // Web3: wait for parent-bound state to confirm parent address is set
-    if (id.ready && id.kind === "web3" && id.postAuth === "parent-bound" && authing === "web3") {
-      router.push("/dashboard/");
-      return;
-    }
-    // Local: navigate as soon as kind is set
+    // Web3 & Local: navigate after profile load starts (or immediately for local)
     if (id.ready && id.kind === "local" && isBusy) {
       router.push("/dashboard/");
       return;
     }
-  }, [id.ready, id.kind, id.postAuth, authing, isBusy, router]);
+
+    // Web3: wait for profile load to start
+    if (id.ready && id.kind === "web3" && isBusy && readyToNavigate) {
+      console.log("[LoginScreen] Navigating to dashboard");
+      router.push("/dashboard/");
+      return;
+    }
+  }, [id.ready, id.kind, isBusy, readyToNavigate, router]);
 
   // Keep the UI quiet while rehydrating
   if (!id.ready) {
     return <div className="rounded border p-4 bg-white/90">Loading…</div>;
   }
 
-  // Hide buttons when we're about to navigate anyway
-  const showButtons = !(
-    id.kind === "local" || (id.kind === "web3" && id.postAuth === "parent-bound")
-  );
+  // Hide buttons when we're about to navigate anyway (instant login!)
+  const showButtons = !(id.kind === "local" || id.kind === "web3");
 
   return (
     <div className="space-y-8 max-w-3xl mx-auto">
@@ -128,17 +138,17 @@ export default function LoginScreen() {
         {/* Recent Updates Banner */}
         <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700 rounded-xl p-4 text-center">
           <p className="text-sm font-semibold text-blue-900 dark:text-blue-100">
-            📢 Recent Updates (Dec 25)
+            📢 Recent Updates (Jan 26)
           </p>
           <p className="text-xs text-blue-800 dark:text-blue-200 mt-1">
-            POD collectibles now live - create & claim limited editions • Dark mode with preference saving • Enhanced Swarm verification
+            Streamlined Web3 wallet connection • Zupass explorer with POD ticket upload • POD collectibles now live—create & claim limited editions
           </p>
         </div>
 
         <div className="text-left bg-white/90 dark:bg-gray-800/90 rounded-xl border dark:border-gray-700 p-6 space-y-3">
           <p className="text-sm text-gray-700 dark:text-gray-300">
-            Connect with your Web3 wallet (MetaMask, Trust Wallet, etc.) or create a new account
-            to experience the future of decentralized social platforms.
+            Connect with your Web3 wallet (MetaMask, Trust Wallet, etc.) or create a local account
+            to experience the future of decentralised social platforms.
           </p>
 
           <p className="text-sm font-semibold text-gray-800 dark:text-gray-200">Once connected, you can:</p>
@@ -146,7 +156,8 @@ export default function LoginScreen() {
             <li>Create your profile with a custom avatar and display name</li>
             <li>Post and reply to messages on our decentralised forum</li>
             <li>Your data is stored on the Swarm Network—no centralised servers</li>
-            <li>Experience true digital ownership with POD based collectibles</li>
+            <li>Experience true digital ownership with POD-based collectibles</li>
+            <li>Your cryptographic identity is stored locally and restored automatically on return</li>
           </ul>
         </div>
       </div>
@@ -155,43 +166,31 @@ export default function LoginScreen() {
       <div className="rounded-xl border dark:border-gray-700 p-6 bg-white/90 dark:bg-gray-800/90 space-y-4">
         <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">Sign in</div>
 
-        {/* Web3-only progress banner */}
-        {authing === "web3" && id.postAuth !== "parent-bound" && (
-          <div className="rounded border dark:border-amber-700 p-3 bg-amber-50/70 dark:bg-amber-900/30 text-sm dark:text-amber-100" aria-live="polite">
-            Authorizing… please confirm in your wallet.
-          </div>
-        )}
-
         {showButtons && (
           <div className="flex flex-wrap gap-2">
-            {/* WEB3 Button */}
+            {/* WEB3 Button - Instant login (no signatures!) */}
             <Button
               disabled={isBusy}
               onClick={async () => {
                 if (isBusy) return;
                 setIsBusy(true);
-                setAuthing("web3");
 
                 try {
-                  // Let the "Authorizing…" banner actually paint
-                  await new Promise(res => setTimeout(res, 50));
                   await warmHandshake();
 
-                  // Now run the 712 flow
+                  // Instant login - no signatures!
                   const ok = await id.startWeb3Login();
                   if (!ok) {
-                    // user canceled / failed verification → allow another attempt
+                    // user canceled / failed → allow another attempt
                     setIsBusy(false);
-                    setAuthing("none");
                   }
                   // ✅ Success: useEffect will handle navigation when state propagates
                 } catch {
                   setIsBusy(false);
-                  setAuthing("none");
                 }
               }}
             >
-              {isBusy && authing === "web3" ? "Waiting for signature…" : "Continue with Web3 (MetaMask / Wallet)"}
+              {isBusy ? "Connecting…" : "Continue with Web3 (MetaMask / Wallet)"}
             </Button>
 
             {/* LOCAL Button */}
@@ -217,11 +216,13 @@ export default function LoginScreen() {
           </div>
         )}
 
-        {/* Tiny status hint (optional) */}
-        {id.safe && (
+        {/* Status hint - show auth state */}
+        {id.parent && (
           <div className="text-xs text-gray-700 dark:text-gray-400">
-            Posting key ready at <code>{id.safe.slice(0, 6)}…{id.safe.slice(-4)}</code>
-            {id.kind === "web3" && id.postAuth === "parent-bound" ? " (parent-bound)" : ""}
+            Connected: <code>{id.parent.slice(0, 6)}…{id.parent.slice(-4)}</code>
+            {id.safe && (
+              <> • Safe: <code>{id.safe.slice(0, 6)}…{id.safe.slice(-4)}</code></>
+            )}
           </div>
         )}
       </div>
@@ -252,12 +253,13 @@ export default function LoginScreen() {
           </p>
 
           <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700 rounded-lg">
-            <p className="text-sm font-semibold text-blue-900 dark:text-blue-100 mb-2">🚀 Next Steps</p>
+            <p className="text-sm font-semibold text-blue-900 dark:text-blue-100 mb-2">🚀 Roadmap</p>
             <ul className="text-xs text-blue-800 dark:text-blue-200 space-y-1 list-disc list-inside">
-              <li>Enhance forum with improved loading, caching, and rendering performance.</li>
-              <li>Expand POD capabilities: event tickets, loyalty points, and achievement badges.</li>
-              <li>Enable simple Web2 access through an email login option.</li>
-              <li>Support additional authentication options for Web3 users.</li>
+              <li>Optimise forum performance with improved loading and caching</li>
+              <li>Expand POD capabilities: event tickets, loyalty points, and achievement badges</li>
+              <li>Enable Web2 access via email login for broader accessibility</li>
+              <li>Add alternative authentication methods for Web3 users</li>
+              <li>Launch as a Progressive Web App (PWA) for mobile installation</li>
             </ul>
           </div>
 

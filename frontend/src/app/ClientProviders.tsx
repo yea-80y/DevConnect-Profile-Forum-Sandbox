@@ -51,6 +51,9 @@ export default function ClientProviders({ children }: { children: ReactNode }) {
   // NEW: admin state from /api/auth/me (cookie backed)
   const [me, setMe] = useState<AdminMe>({ isAdmin: false, address: null });
 
+  // NEW: Track subject from localStorage directly (faster than waiting for React state)
+  const [cachedSubject, setCachedSubject] = useState<HexAddr>(null);
+
   /**
    * 1) Subject (user address): derive on mount and whenever the account changes.
    */
@@ -95,15 +98,32 @@ export default function ClientProviders({ children }: { children: ReactNode }) {
     id.kind === "web3" // Only enabled for Web3 users
   );
 
-  // subject: parent (web3) or safe (local) — validated
+  // Hydrate cached subject from localStorage on mount
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("woco.subject0x");
+      if (stored && /^0x[0-9a-fA-F]{40}$/.test(stored)) {
+        console.log("[ClientProviders] Hydrated subject from localStorage:", stored);
+        setCachedSubject(stored as `0x${string}`);
+      }
+    } catch {}
+  }, []);
+
+  // subject: prefer cachedSubject (from localStorage), fallback to derived from id
   const subject = useMemo<HexAddr>(() => {
+    // If we have cachedSubject from localStorage, use it immediately
+    if (cachedSubject) {
+      return cachedSubject;
+    }
+
+    // Otherwise derive from auth state (normal flow)
     if (!id.ready) {
       return null;
     }
     const addr = id.kind === "web3" ? id.parent : id.safe;
     const result = addr && /^0x[0-9a-fA-F]{40}$/.test(addr) ? (addr as `0x${string}`) : null;
     return result;
-  }, [id.ready, id.kind, id.parent, id.safe]);
+  }, [cachedSubject, id.ready, id.kind, id.parent, id.safe]);
 
   // Bump when auth/account changes so ProfileProvider remounts and re-runs its cold-start refresh
   // Keep key minimal; remount only when subject or profile version changes
@@ -132,7 +152,10 @@ export default function ClientProviders({ children }: { children: ReactNode }) {
   try {
     const cached = localStorage.getItem(OWNER_CACHE_KEY) as `0x${string}` | null;
     if (cached && cached.startsWith("0x")) {
+      console.log("[ClientProviders] Loaded feedOwner from cache:", cached);
       setFeedOwner(prev => prev ?? cached);
+    } else {
+      console.log("[ClientProviders] No cached feedOwner, will fetch from API");
     }
   } catch {}
 
@@ -142,10 +165,15 @@ export default function ClientProviders({ children }: { children: ReactNode }) {
     try {
       const r = await fetch(apiUrl("/api/profile"), { cache: "no-store", credentials: "include" });
       const d = (await r.json()) as ProfileApi;
-      if (!alive || !d?.ok || !d.owner?.startsWith?.("0x")) return;
+      if (!alive || !d?.ok || !d.owner?.startsWith?.("0x")) {
+        console.log("[ClientProviders] API fetch failed or invalid response");
+        return;
+      }
+      console.log("[ClientProviders] Fetched feedOwner from API:", d.owner);
       setFeedOwner(prev => (prev === d.owner ? prev : d.owner));
       try { localStorage.setItem(OWNER_CACHE_KEY, d.owner); } catch {}
-    } catch {
+    } catch (err) {
+      console.error("[ClientProviders] Failed to fetch feedOwner:", err);
       /* keep cached value */
     }
   })();
@@ -219,7 +247,42 @@ export default function ClientProviders({ children }: { children: ReactNode }) {
   }, []);
 
   /**
-   * 5) Force a micro-remount of ProfileProvider on account switch or profile update.
+   * 5) Listen for auth:changed to force profile refresh after login
+   */
+  useEffect(() => {
+    const onAuthChanged = () => {
+      console.log("[ClientProviders] auth:changed - reading subject from localStorage");
+
+      // Read subject directly from localStorage (bypasses React state delays)
+      try {
+        const stored = localStorage.getItem("woco.subject0x");
+        if (stored && /^0x[0-9a-fA-F]{40}$/.test(stored)) {
+          console.log("[ClientProviders] Found subject in localStorage:", stored);
+          setCachedSubject(stored as `0x${string}`);
+        } else {
+          console.log("[ClientProviders] No valid subject in localStorage");
+          setCachedSubject(null);
+        }
+      } catch {}
+
+      setProfileVersion((v) => v + 1);
+    };
+
+    const onProfileLoadRequested = () => {
+      console.log("[ClientProviders] profile:load-requested - bumping profileVersion");
+      setProfileVersion((v) => v + 1);
+    };
+
+    window.addEventListener("auth:changed", onAuthChanged);
+    window.addEventListener("profile:load-requested", onProfileLoadRequested);
+    return () => {
+      window.removeEventListener("auth:changed", onAuthChanged);
+      window.removeEventListener("profile:load-requested", onProfileLoadRequested);
+    };
+  }, []);
+
+  /**
+   * 6) Force a micro-remount of ProfileProvider on account switch or profile update.
    ***/
 
   return (

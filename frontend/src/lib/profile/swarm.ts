@@ -9,7 +9,6 @@ export async function getFeedRef(beeUrl: string, owner: string, topicHex: string
  *  - Lowercase ref to match server writes.
  *  - Try /bytes first; fallback to /bzz (NO trailing slash).
  *  - Use text() → JSON.parse to avoid content-type quirks.
- *  - cache: "no-store" avoids reusing truncated cached responses.
  */
 export async function fetchJsonByRef(beeUrl: string, refHex: string) {
   const ref = refHex.toLowerCase();
@@ -43,7 +42,6 @@ export async function fetchJsonByRef(beeUrl: string, refHex: string) {
 /** Read a binary/blob by Swarm reference (avatars/images uploaded via uploadFile → /bzz).
  *  - Lowercase ref for consistency.
  *  - Prefer /bzz/<ref> (NO trailing slash); fallback to /bytes for raw blobs.
- *  - cache: "no-store" avoids stale partials.
  */
 export async function fetchBlobByRef(beeUrl: string, refHex: string) {
   const ref = refHex.toLowerCase();

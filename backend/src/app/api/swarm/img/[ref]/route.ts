@@ -76,6 +76,9 @@ export async function GET(req: Request) {
       headers: {
         "Cache-Control": "no-store, max-age=0",
         "Accept-Ranges": "none",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET",
+        "Cross-Origin-Resource-Policy": "cross-origin",
       },
     });
   }
@@ -113,6 +116,9 @@ export async function GET(req: Request) {
           "Content-Type": contentType,
           "Cache-Control": "public, max-age=31536000, immutable",
           "Accept-Ranges": "none",
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET",
+          "Cross-Origin-Resource-Policy": "cross-origin",
         },
       });
     } catch {
@@ -125,6 +131,9 @@ export async function GET(req: Request) {
     headers: {
       "Cache-Control": "no-store, max-age=0",
       "Accept-Ranges": "none",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET",
+      "Cross-Origin-Resource-Policy": "cross-origin",
     },
   });
 }

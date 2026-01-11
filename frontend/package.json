@@ -14,7 +14,10 @@
   "dependencies": {
     "@ethersphere/bee-js": "^10.1.1",
     "@noble/ed25519": "^3.0.0",
+    "@parcnet-js/app-connector": "^1.1.10",
+    "@parcnet-js/client-rpc": "^1.2.0",
     "@pcd/pod": "^0.5.1",
+    "@pcd/zuauth": "^1.8.1",
     "@radix-ui/react-slot": "^1.2.3",
     "axios": "^1.13.2",
     "class-variance-authority": "^0.7.1",

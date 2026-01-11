@@ -223,8 +223,22 @@ export default function Home() {
     }
   }, [id.ready, id.kind, id.parent, id.safe, userAddress]);
 
-  // Show top banner while a web3 session is authorizing EIP-712
-  const authorizing = id.ready && id.kind === "web3" && id.postAuth !== "parent-bound";
+  // Listen for auth changes (e.g., after login)
+  useEffect(() => {
+    const handleAuthChange = () => {
+      console.log("[dashboard] auth:changed event - refreshing...");
+      // Force re-read from localStorage
+      try {
+        const cachedSubject = localStorage.getItem("woco.subject0x") as `0x${string}` | null;
+        if (cachedSubject && /^0x[0-9a-fA-F]{40}$/.test(cachedSubject)) {
+          setUserAddress(cachedSubject);
+        }
+      } catch {}
+    };
+
+    window.addEventListener("auth:changed", handleAuthChange);
+    return () => window.removeEventListener("auth:changed", handleAuthChange);
+  }, []);
 
   // 1) Keep owner in sync with ClientProviders via event
   useEffect(() => {
@@ -264,6 +278,7 @@ export default function Home() {
             <Link href="/account" className="text-sm text-gray-900 dark:text-gray-100 underline">Accounts</Link>
             <Link href="/profile" className="text-sm text-gray-900 dark:text-gray-100 underline">Edit profile</Link>
             <Link href="/forum" className="text-sm text-gray-900 dark:text-gray-100 underline">Forum</Link>
+            <Link href="/zupass-explorer" className="text-sm text-gray-900 dark:text-gray-100 underline">Zupass Explorer</Link>
           </div>
         </div>
       </header>
@@ -271,27 +286,22 @@ export default function Home() {
       <div className="mx-auto max-w-3xl px-4 py-4 space-y-6">
         {/* Recent Updates Banner */}
         <section className="rounded-xl bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700 shadow-sm p-4">
-          <div className="text-sm font-semibold text-blue-900 dark:text-blue-100 mb-2">📢 Recent Updates (Dec 25)</div>
+          <div className="text-sm font-semibold text-blue-900 dark:text-blue-100 mb-2">📢 Recent Updates (Jan 26)</div>
           <ul className="text-xs text-blue-800 dark:text-blue-200 space-y-1 list-disc list-inside mb-3">
-            <li>POD collectibles now live - create limited editions, claim with cryptographic proof, and build your collection</li>
-            <li>Dark mode toggle with user preference saving across sessions</li>
-            <li>Enhanced Swarm verification and streamlined profile upload/display logic</li>
+            <li>Streamlined wallet connection: EIP-712 signatures only requested when posting or creating/claiming PODs</li>
+            <li>Zupass integration: connect your account and upload ticket PODs with built-in viewer</li>
+            <li>POD collectibles now live—create limited editions, claim with cryptographic proof, and build your collection</li>
           </ul>
 
-          <div className="text-sm font-semibold text-blue-900 dark:text-blue-100 mb-2 mt-4">🚀 Next Steps</div>
+          <div className="text-sm font-semibold text-blue-900 dark:text-blue-100 mb-2 mt-4">🚀 Roadmap</div>
           <ul className="text-xs text-blue-800 dark:text-blue-200 space-y-1 list-disc list-inside">
-            <li>Enhance forum with improved loading, caching, and rendering performance.</li>
-            <li>Expand POD capabilities: event tickets, loyalty points, and achievement badges.</li>
-            <li>Enable simple Web2 access through an email login option.</li>
-            <li>Support additional authentication options for Web3 users.</li>
+            <li>Optimise forum performance with improved loading and caching</li>
+            <li>Expand POD capabilities: event tickets, loyalty points, and achievement badges</li>
+            <li>Enable Web2 access via email login for broader accessibility</li>
+            <li>Add alternative authentication methods for Web3 users</li>
+            <li>Launch as a Progressive Web App (PWA) for mobile installation</li>
           </ul>
         </section>
-
-        {authorizing && (
-          <div className="rounded-xl border p-3 bg-amber-50/70 dark:bg-amber-900/30 text-sm mb-2" aria-live="polite">
-            Authorizing… please confirm in your wallet.
-          </div>
-        )}
 
         {/* Wallet disconnected warning (Web3 users only) */}
         {id.kind === "web3" && wallet.isConnected === false && (
@@ -493,6 +503,16 @@ export default function Home() {
           <Link href="/forum" className="rounded-xl bg-blue-600 dark:bg-blue-700 border border-blue-700 dark:border-blue-600 shadow-md p-4 hover:bg-blue-700 dark:hover:bg-blue-600 transition">
             <div className="text-sm font-bold text-white">Forum</div>
             <div className="text-xs text-blue-100 dark:text-blue-200">Discuss sessions & speakers</div>
+          </Link>
+
+          <Link href="/zupass-explorer" className="rounded-xl bg-purple-600 dark:bg-purple-700 border border-purple-700 dark:border-purple-600 shadow-md p-4 hover:bg-purple-700 dark:hover:bg-purple-600 transition">
+            <div className="text-sm font-bold text-white">Zupass Explorer</div>
+            <div className="text-xs text-purple-100 dark:text-purple-200">Connect & explore your PODs</div>
+          </Link>
+
+          <Link href="/verify-ticket" className="rounded-xl bg-purple-600 dark:bg-purple-700 border border-purple-700 dark:border-purple-600 shadow-md p-4 hover:bg-purple-700 dark:hover:bg-purple-600 transition">
+            <div className="text-sm font-bold text-white">Verify Ticket</div>
+            <div className="text-xs text-purple-100 dark:text-purple-200">Upload & verify POD tickets</div>
           </Link>
 
           <Link href="/profile" className="rounded-xl bg-blue-600 dark:bg-blue-700 border border-blue-700 dark:border-blue-600 shadow-md p-4 hover:bg-blue-700 dark:hover:bg-blue-600 transition">

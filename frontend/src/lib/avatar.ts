@@ -199,32 +199,67 @@ export async function fetchLatestAvatarRef(owner: string): Promise<string | null
 
 // Simple per-author memoization to avoid duplicate /api/profile calls across PostItems.
 // --- lightweight per-author cache to prevent duplicate lookups ---
-const _avatarRefCache = new Map<string, string | null>()
+
+// Cache for successful avatar refs (these are stable, cache indefinitely)
+const _avatarRefCache = new Map<string, string>()
+
+// Short-lived negative cache to avoid hammering for users without avatars
+// Stores timestamp of last failed lookup - retry after 5 seconds
+const _avatarRefNegativeCache = new Map<string, number>()
+const NEGATIVE_CACHE_TTL_MS = 5_000 // 5 seconds before retrying failed lookups
+
 const _avatarRefInflight = new Map<string, Promise<string | null>>()
 
 export function getLatestAvatarRefCached(owner: string): Promise<string | null> {
   const key = owner?.toLowerCase()
   if (!isEthAddress(key)) return Promise.resolve(null)
 
+  // Check positive cache first (successful lookups)
   if (_avatarRefCache.has(key)) {
     return Promise.resolve(_avatarRefCache.get(key)!)
   }
+
+  // Check negative cache (recent failed lookups - avoid hammering)
+  const negativeTs = _avatarRefNegativeCache.get(key)
+  if (negativeTs && Date.now() - negativeTs < NEGATIVE_CACHE_TTL_MS) {
+    return Promise.resolve(null) // Recently failed, don't retry yet
+  }
+
+  // Check if request already in flight
   const inflight = _avatarRefInflight.get(key)
   if (inflight) return inflight
 
   const p = fetchLatestAvatarRef(key)
     .then((ref) => {
-      _avatarRefCache.set(key, ref ?? null)
       _avatarRefInflight.delete(key)
-      return ref ?? null
+      if (ref) {
+        // Success! Cache the avatar ref permanently
+        _avatarRefCache.set(key, ref)
+        _avatarRefNegativeCache.delete(key) // Clear any negative cache
+        return ref
+      } else {
+        // No avatar found - add to negative cache with TTL
+        _avatarRefNegativeCache.set(key, Date.now())
+        return null
+      }
     })
     .catch(() => {
       _avatarRefInflight.delete(key)
+      // Error - add to negative cache so we don't hammer
+      _avatarRefNegativeCache.set(key, Date.now())
       return null
     })
 
   _avatarRefInflight.set(key, p)
   return p
+}
+
+// Force refresh an avatar (bypasses cache) - useful after profile update
+export function invalidateAvatarCache(owner: string): void {
+  const key = owner?.toLowerCase()
+  if (!key) return
+  _avatarRefCache.delete(key)
+  _avatarRefNegativeCache.delete(key)
 }
 
 // (Optional) allow pages to pre-warm a handful of authors

@@ -162,10 +162,22 @@ export default function CreateCollectiblePage() {
 
       setProgress("Deriving POD signing keys...");
 
-      // Get wallet for POD signing
-      const wallet = await id.getWalletForPOD();
+      // Get wallet for POD signing (lazy loading - request POD identity if needed)
+      let wallet = await id.getWalletForPOD();
       if (!wallet) {
-        throw new Error("Failed to access wallet for POD signing");
+        // First time creating POD - request POD identity signature
+        console.log("[CreateCollectible] No POD identity found - requesting signature...");
+        setProgress("Requesting POD identity signature...");
+        try {
+          await id.requestPodIdentity();
+          // Try again after generating POD identity
+          wallet = await id.getWalletForPOD();
+          if (!wallet) {
+            throw new Error("Failed to generate POD identity");
+          }
+        } catch (err) {
+          throw new Error(`Failed to setup POD identity: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        }
       }
 
       // Derive POD keypair from Ethereum wallet (or seed for web3 users)
@@ -348,7 +360,7 @@ export default function CreateCollectiblePage() {
                 </button>
               </div>
             ) : (
-              <label className="block w-full aspect-square max-w-sm mx-auto border-2 border-dashed dark:border-gray-600 rounded-lg cursor-pointer hover:border-gray-400 dark:hover:border-gray-500 transition">
+              <label htmlFor="collectible-image-upload" className="block w-full aspect-square max-w-sm mx-auto border-2 border-dashed dark:border-gray-600 rounded-lg cursor-pointer hover:border-gray-400 dark:hover:border-gray-500 transition">
                 <div className="flex flex-col items-center justify-center h-full">
                   <svg className="w-12 h-12 text-gray-400 dark:text-gray-500 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -357,6 +369,8 @@ export default function CreateCollectiblePage() {
                   <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">Max 5MB</p>
                 </div>
                 <input
+                  id="collectible-image-upload"
+                  name="collectible-image"
                   type="file"
                   accept="image/*"
                   onChange={handleImageSelect}

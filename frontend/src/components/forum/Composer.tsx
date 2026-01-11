@@ -100,15 +100,15 @@ export function Composer(props: {
     )
   }
 
-  // Web3 sessions must have a valid capability
+  // Web3 sessions must have a valid capability (lazy loading - request when needed)
   if (id.kind === "web3" && id.postAuth === "blocked") {
     return (
       <div className="rounded border dark:border-gray-700 p-3 bg-white/90 dark:bg-gray-800/90 space-y-2">
         <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">Authorize posting</div>
         <p className="text-sm dark:text-gray-300">
-          You need to authorize a posting key with your wallet before posting.
+          To post on the forum, authorize a secure posting account. Your wallet will ask you to sign a message (EIP-712).
         </p>
-        <Button onClick={id.signCapabilityNow}>Authorize (EIP-712)</Button>
+        <Button onClick={() => id.requestPostingCapability()}>Authorize Posting</Button>
       </div>
     )
   }

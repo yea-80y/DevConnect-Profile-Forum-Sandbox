@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Wallet, HDNodeWallet } from "ethers";
 import type { UsePostingIdentity, AuthKind, PostAuth, EncryptedJSON } from "./types";
-import { K_ENC_KEYSTORE, K_ENC_CAP, K_POD_SEED, K_KIND, K_PARENT } from "./constants";
+import { K_ENC_KEYSTORE, K_ENC_CAP, K_POD_SEED, K_KIND } from "./constants";
 import { getKV, putKV, delKV } from "./storage/indexeddb";
 import { ensureDeviceKey, encryptJSON, decryptJSON } from "./storage/encryption";
 import { startWeb3Login } from "./flows/web3-login";
@@ -92,10 +92,7 @@ export function usePostingIdentity(): UsePostingIdentity {
               setKind("web3");
               setPostAuth("parent-bound");
               setSubjectCookie(parentAddr);
-              try {
-                sessionStorage.setItem("woco.subject0x", parentAddr);
-                localStorage.setItem("woco.subject0x", parentAddr);
-              } catch {}
+              try { sessionStorage.setItem("woco.subject0x", parentAddr); } catch {}
             } else {
               // Capability invalid - just restore parent address
               const parentAddr = capability.parent;
@@ -103,23 +100,9 @@ export function usePostingIdentity(): UsePostingIdentity {
               setKind("web3");
               setPostAuth("blocked");
               setSubjectCookie(parentAddr);
-              try {
-                sessionStorage.setItem("woco.subject0x", parentAddr);
-                localStorage.setItem("woco.subject0x", parentAddr);
-              } catch {}
             }
           } else {
-            // No capability yet - web3 user without posting capability (lazy loading)
-            // Restore parent address from storage
-            const savedParent = await getKV<string>(K_PARENT);
-            if (savedParent) {
-              setParent(savedParent);
-              setSubjectCookie(savedParent);
-              try {
-                sessionStorage.setItem("woco.subject0x", savedParent);
-                localStorage.setItem("woco.subject0x", savedParent);
-              } catch {}
-            }
+            // No capability yet - web3 user without posting capability
             setKind("web3");
             setPostAuth("blocked");
           }
@@ -141,10 +124,7 @@ export function usePostingIdentity(): UsePostingIdentity {
 
             const addr = tmpSafe.address;
             setSubjectCookie(addr);
-            try {
-              sessionStorage.setItem("woco.subject0x", addr);
-              localStorage.setItem("woco.subject0x", addr);
-            } catch {}
+            try { sessionStorage.setItem("woco.subject0x", addr); } catch {}
           }
         }
       } catch (err) {
@@ -174,19 +154,9 @@ export function usePostingIdentity(): UsePostingIdentity {
         setPostAuth("blocked"); // Not authorized to post yet
         setReady(true);
         setSubjectCookie(result.parentAddress);
-        try {
-          sessionStorage.setItem("woco.subject0x", result.parentAddress);
-          localStorage.setItem("woco.subject0x", result.parentAddress);
-        } catch {}
+        try { sessionStorage.setItem("woco.subject0x", result.parentAddress); } catch {}
+        try { localStorage.removeItem("woco.subject0x"); } catch {}
         try { localStorage.removeItem("woco.isNewAccount"); } catch {}
-
-        // Trigger immediate profile fetch so it's ready before dashboard loads
-        setTimeout(() => {
-          window.dispatchEvent(new Event("auth:changed"));
-          // Also trigger profile load
-          window.dispatchEvent(new Event("profile:load-requested"));
-        }, 100); // Small delay to ensure state is committed
-
         return true;
       }
 
@@ -218,11 +188,7 @@ export function usePostingIdentity(): UsePostingIdentity {
       setPostAuth("local-only");
       setReady(true);
 
-      try {
-        sessionStorage.setItem("woco.subject0x", wallet.address);
-        localStorage.setItem("woco.subject0x", wallet.address);
-      } catch {}
-      window.dispatchEvent(new Event("auth:changed"));
+      try { sessionStorage.setItem("woco.subject0x", wallet.address); } catch {}
       return true;
     } catch (err) {
       console.error("[usePostingIdentity] Local login failed:", err);
@@ -286,8 +252,10 @@ export function usePostingIdentity(): UsePostingIdentity {
     privateKey?: string;
     seed?: string;
   } | null> => {
+    const w = postingWalletRef.current;
+    if (!w) return null;
+
     // Web3 users: return POD seed (derived from EIP-712 signature)
-    // Note: Web3 users don't need posting wallet for PODs, just the POD seed
     if (kind === "web3") {
       try {
         const deviceKey = await ensureDeviceKey();
@@ -296,17 +264,12 @@ export function usePostingIdentity(): UsePostingIdentity {
           const podSeedData = await decryptJSON<{ seed: string }>(deviceKey, encPodSeed);
           return { seed: podSeedData.seed };
         }
-        // No POD seed yet - caller should request it via requestPodIdentity()
-        return null;
       } catch (e) {
         console.warn("[getWalletForPOD] Failed to load POD seed:", e);
-        return null;
       }
     }
 
-    // Local users: return private key from posting wallet
-    const w = postingWalletRef.current;
-    if (!w) return null;
+    // Local users: return private key
     return { privateKey: w.privateKey };
   }, [kind]);
 
@@ -319,7 +282,6 @@ export function usePostingIdentity(): UsePostingIdentity {
     await delKV(K_ENC_CAP);
     await delKV(K_POD_SEED);
     await delKV(K_KIND);
-    await delKV(K_PARENT);
 
     try {
       sessionStorage.removeItem("woco.subject0x");
@@ -327,11 +289,10 @@ export function usePostingIdentity(): UsePostingIdentity {
     } catch {}
     clearSubjectCookie();
 
-    // Clear profile cache (but preserve theme preference)
+    // Clear profile cache
     try {
       const keys = Object.keys(localStorage);
       keys.forEach(key => {
-        if (key === 'woco.theme') return; // Preserve theme preference
         if (key.startsWith('profile:') || key.startsWith('woco.')) {
           localStorage.removeItem(key);
         }
@@ -403,6 +364,3 @@ export function usePostingIdentity(): UsePostingIdentity {
     ]
   );
 }
-
-// Default export for backwards compatibility
-export default usePostingIdentity;

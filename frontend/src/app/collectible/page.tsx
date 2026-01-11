@@ -179,10 +179,21 @@ function CollectibleContent() {
         throw new Error("No editions available");
       }
 
-      // Get user's wallet
-      const wallet = await id.getWalletForPOD();
+      // Get user's wallet (lazy loading - request POD identity if needed)
+      let wallet = await id.getWalletForPOD();
       if (!wallet) {
-        throw new Error("Failed to access wallet");
+        // First time creating POD - request POD identity signature
+        console.log("[Collectible] No POD identity found - requesting signature...");
+        try {
+          await id.requestPodIdentity();
+          // Try again after generating POD identity
+          wallet = await id.getWalletForPOD();
+          if (!wallet) {
+            throw new Error("Failed to generate POD identity");
+          }
+        } catch (err) {
+          throw new Error(`Failed to setup POD identity: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        }
       }
 
       // Get POD keys for signing

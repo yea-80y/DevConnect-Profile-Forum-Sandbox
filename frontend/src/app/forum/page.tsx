@@ -62,13 +62,16 @@ function ForumContent() {
       try {
         if (threadParam) {
           // Thread view - load posts in this thread
-          const t = await fetchThread(BOARD_ID, threadParam)
+          // Parallelize: fetch thread list AND muted list at the same time
+          const [t, mutedResp] = await Promise.all([
+            fetchThread(BOARD_ID, threadParam),
+            fetch(
+              apiUrl(`/api/moderation/muted?boardId=${encodeURIComponent(BOARD_ID)}&kind=reply`),
+              { cache: "no-store" }
+            ).then(r => r.json()).catch(() => ({ refs: [] }))
+          ])
           if (cancelled) return
 
-          const mutedResp = await fetch(
-            apiUrl(`/api/moderation/muted?boardId=${encodeURIComponent(BOARD_ID)}&kind=reply`),
-            { cache: "no-store" }
-          ).then(r => r.json()).catch(() => ({ refs: [] }))
           const mutedSet = new Set<string>(
             Array.isArray(mutedResp.refs) ? mutedResp.refs.map((x: string) => x.toLowerCase()) : []
           )
@@ -76,25 +79,30 @@ function ForumContent() {
           const visible = t.posts.filter((r) => !mutedSet.has(r.toLowerCase()))
           setThreads(visible)
 
+          // Fetch all posts in PARALLEL for better performance
+          const results = await Promise.allSettled(
+            visible.map(r => fetchPostJSON(r))
+          )
+          if (cancelled) return
+
           const next: Record<string, CanonicalPost | null> = {}
-          for (const r of visible) {
-            try {
-              next[r] = await fetchPostJSON(r)
-            } catch {
-              next[r] = null
-            }
-            if (cancelled) return
-          }
+          visible.forEach((r, i) => {
+            const result = results[i]
+            next[r] = result.status === "fulfilled" ? result.value : null
+          })
           setFirstPosts(next)
         } else {
           // Board view - load thread list
-          const b = await fetchBoard(BOARD_ID)
+          // Parallelize: fetch board AND muted list at the same time
+          const [b, mutedResp] = await Promise.all([
+            fetchBoard(BOARD_ID),
+            fetch(
+              apiUrl(`/api/moderation/muted?boardId=${encodeURIComponent(BOARD_ID)}&kind=thread`),
+              { cache: "no-store" }
+            ).then(r => r.json()).catch(() => ({ refs: [] }))
+          ])
           if (cancelled) return
 
-          const mutedResp = await fetch(
-            apiUrl(`/api/moderation/muted?boardId=${encodeURIComponent(BOARD_ID)}&kind=thread`),
-            { cache: "no-store" }
-          ).then(r => r.json()).catch(() => ({ refs: [] }))
           const mutedSet = new Set<string>(
             Array.isArray(mutedResp.refs) ? mutedResp.refs.map((x: string) => x.toLowerCase()) : []
           )
@@ -102,15 +110,17 @@ function ForumContent() {
           const visible = b.threads.filter((r) => !mutedSet.has(r.toLowerCase()))
           setThreads(visible)
 
+          // Fetch all thread previews in PARALLEL for better performance
+          const results = await Promise.allSettled(
+            visible.map(t => fetchPostJSON(t))
+          )
+          if (cancelled) return
+
           const next: Record<string, CanonicalPost | null> = {}
-          for (const t of visible) {
-            try {
-              next[t] = await fetchPostJSON(t)
-            } catch {
-              next[t] = null
-            }
-            if (cancelled) return
-          }
+          visible.forEach((t, i) => {
+            const result = results[i]
+            next[t] = result.status === "fulfilled" ? result.value : null
+          })
           setFirstPosts(next)
         }
       } catch (e: unknown) {
@@ -123,7 +133,8 @@ function ForumContent() {
   }, [threadParam])
 
   useEffect(() => {
-    // pre-warm a handful of authors currently on the board
+    // Pre-warm avatar cache for all visible authors
+    // This triggers background lookups so avatars load faster
     const authors = Array.from(
       new Set(
         Object.values(firstPosts)
@@ -131,7 +142,8 @@ function ForumContent() {
           .filter(Boolean) as string[]
       )
     )
-    primeAvatarCache(authors.slice(0, 12))
+    // Prime all authors (the cache handles deduplication and rate limiting)
+    primeAvatarCache(authors)
   }, [firstPosts])
   
   return (
