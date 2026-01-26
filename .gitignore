@@ -118,3 +118,4 @@ frontend/create-*.js
 *.env.*.backup
 frontend/.env.local.backup
 backend/.env.local.backup
+frontend/site.tar
