@@ -2,13 +2,11 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { useRouter } from "next/navigation";
 import usePostingIdentity from "@/lib/auth/usePostingIdentity";
 import LoginScreen from "@/components/auth/LoginScreen";
 
 export default function RootGate() {
   const id = usePostingIdentity();
-  const router = useRouter();
   const redirected = useRef(false);
 
   useEffect(() => {
@@ -19,10 +17,13 @@ export default function RootGate() {
 
     if (canEnter) {
       redirected.current = true;
-      // soft SPA redirect is fine here; no need for ?fresh=1
-      router.replace("/dashboard/");
+      // Use full page navigation instead of router.replace() to avoid RSC fetch issues
+      // on static export (eth.limo/Swarm). RSC navigation tries to fetch /dashboard/index.txt
+      // which doesn't work correctly on static hosting.
+      const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+      window.location.href = basePath ? `${basePath}/dashboard/` : "/dashboard/";
     }
-  }, [id.ready, id.kind, router]);
+  }, [id.ready, id.kind]);
 
   if (!id.ready) {
     return (

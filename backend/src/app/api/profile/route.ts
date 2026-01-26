@@ -4,10 +4,12 @@ export const runtime = "nodejs";
 // app/api/profile/route.ts
 import { NextResponse } from "next/server";
 import { Bee, PrivateKey } from "@ethersphere/bee-js"; // <-- modern API
+import { verifyTypedData, verifyMessage, getAddress } from "ethers";
 // shared deterministic topics + shared types
 import { topicName, topicAvatar, topicVerify } from "@/lib/swarm-core/topics";
 import type { NamePayload, AvatarPayload, ApiOk, Hex0x } from "@/lib/swarm-core/types";
-import { BEE_URL, POSTAGE_BATCH_ID, FEED_PRIVATE_KEY, normalizePk } from "@/config/swarm"
+import { BEE_URL, POSTAGE_BATCH_ID, FEED_PRIVATE_KEY, normalizePk } from "@/config/swarm";
+import { verifyCapability, type CapabilityBundle } from "@/lib/auth/verify-capability";
 
 
 /**
@@ -19,6 +21,20 @@ import { BEE_URL, POSTAGE_BATCH_ID, FEED_PRIVATE_KEY, normalizePk } from "@/conf
  */
 type Kind = "name" | "avatar" | "verify";
 
+// Helper to compare addresses safely
+function addrEq(a?: string | null, b?: string | null): boolean {
+  if (!a || !b) return false;
+  try { return getAddress(a) === getAddress(b); } catch { return false; }
+}
+
+// Extended payloads with auth fields
+interface AuthenticatedNamePayload extends NamePayload {
+  signature: `0x${string}`;
+}
+
+interface AuthenticatedAvatarPayload extends AvatarPayload {
+  signature: `0x${string}`;
+}
 
 export async function POST(req: Request) {
   try {
@@ -29,14 +45,19 @@ export async function POST(req: Request) {
       );
     }
 
-    const { kind, payload } = (await req.json()) as {
+    const body = (await req.json()) as {
       kind: Kind;
       payload: Record<string, unknown>;
+      capability?: CapabilityBundle;
     };
+    const { kind, payload, capability } = body;
 
     if (!kind || !payload) {
       return NextResponse.json({ ok: false, error: "Missing kind/payload" }, { status: 400 });
     }
+
+    // Get posting mode from header (local or web3)
+    const postingKind = req.headers.get("x-posting-kind");
 
     // --- Construct bee + platform signer (platform/private feed owner) ---
     const bee = new Bee(BEE_URL);
@@ -47,68 +68,206 @@ export async function POST(req: Request) {
     const owner0x   = `0x${ownerNo0x}` as Hex0x;           // hex, WITH 0x (for returning to UI)
 
 
-    // NAME (topic = userNo0x; feed owner = platform signer) - Deleted
-    // ---------------------------
     // ---------------------------
     // NAME (topic = subjectNo0x; feed owner = platform signer)
+    // AUTHENTICATED: requires signature or capability
     // ---------------------------
     if (kind === "name") {
-    const p = payload as NamePayload;
+      const p = payload as unknown as AuthenticatedNamePayload;
 
-    // Validate inputs
-    const name = String(p?.name ?? "").trim();
-    if (!name) return NextResponse.json({ ok: false, error: "Empty name" }, { status: 400 });
+      // Validate inputs
+      const name = String(p?.name ?? "").trim();
+      if (!name) return NextResponse.json({ ok: false, error: "Empty name" }, { status: 400 });
 
-    const subject = String(p?.subject ?? "").toLowerCase() as `0x${string}`;
-    if (!/^0x[0-9a-f]{40}$/i.test(subject)) {
+      // Keep original case for signature verification, lowercase for storage
+      const subjectRaw = String(p?.subject ?? "") as `0x${string}`;
+      const subject = subjectRaw.toLowerCase() as `0x${string}`;
+      if (!/^0x[0-9a-f]{40}$/i.test(subject)) {
         return NextResponse.json({ ok: false, error: "Invalid subject address" }, { status: 400 });
-    }
+      }
 
-    // Per-user topic (derived from SUBJECT, not the feed owner)
-    const t = topicName(subject.slice(2).toLowerCase());
+      const signature = p?.signature;
+      if (!signature) {
+        return NextResponse.json({ ok: false, error: "Missing signature" }, { status: 400 });
+      }
 
-    // Writer = platform signer (owner), topic = per-user
-    const w = bee.makeFeedWriter(t, signer);
-    await w.uploadPayload(
+      // Create canonical message for signature verification (use original case!)
+      const signMessage = JSON.stringify({ kind: "name", subject: subjectRaw, name });
+
+      // Verify signature (EIP-191 personal sign)
+      let recovered: string;
+      try {
+        recovered = getAddress(verifyMessage(signMessage, signature));
+      } catch (e) {
+        console.error("[api/profile name] Signature verification failed:", e);
+        return NextResponse.json({ ok: false, error: "Invalid signature" }, { status: 400 });
+      }
+
+      // Authorization based on posting mode
+      if (postingKind === "local") {
+        // LOCAL user: signer must be the subject (their local posting key IS their identity)
+        if (!addrEq(recovered, subject)) {
+          return NextResponse.json({ ok: false, error: "BAD_SIGNATURE" }, { status: 403 });
+        }
+        console.log("[api/profile name] LOCAL user verified:", recovered);
+
+      } else if (postingKind === "web3") {
+        // WEB3 user: must provide capability to prove authorization
+        if (!capability) {
+          return NextResponse.json({
+            ok: false,
+            error: "CAPABILITY_REQUIRED",
+            message: "Web3 users must provide capability bundle for authorization"
+          }, { status: 401 });
+        }
+
+        // Verify the capability (EIP-712 signature from parent)
+        const capResult = verifyCapability(capability, recovered);
+        if (!capResult.valid) {
+          console.warn("[api/profile name] Capability verification failed:", capResult.error);
+          return NextResponse.json({
+            ok: false,
+            error: "INVALID_CAPABILITY",
+            message: capResult.error
+          }, { status: 403 });
+        }
+
+        // Check that the subject matches the verified parent
+        if (!addrEq(subject, capResult.parentAddress)) {
+          console.warn(
+            `[api/profile name] Subject mismatch: subject=${subject}, verified parent=${capResult.parentAddress}`
+          );
+          return NextResponse.json({
+            ok: false,
+            error: "SUBJECT_MISMATCH",
+            message: "Subject must match the parent address from capability"
+          }, { status: 403 });
+        }
+
+        console.log(`[api/profile name] WEB3 user verified: parent=${capResult.parentAddress}, safe=${capResult.safeAddress}`);
+
+      } else {
+        // No posting kind header - fall back to direct signature check
+        if (!addrEq(recovered, subject)) {
+          return NextResponse.json({ ok: false, error: "BAD_SIGNATURE" }, { status: 403 });
+        }
+        console.log("[api/profile name] Direct signature verified:", recovered);
+      }
+
+      // Per-user topic (derived from SUBJECT, not the feed owner)
+      const t = topicName(subject.slice(2).toLowerCase());
+
+      // Writer = platform signer (owner), topic = per-user
+      const w = bee.makeFeedWriter(t, signer);
+      await w.uploadPayload(
         POSTAGE_BATCH_ID,
         JSON.stringify({ v: 1, owner: owner0x, subject, name })
-    );
+      );
 
-    // Return the platform owner (useful for preview) and echo subject
-    return NextResponse.json({ ok: true, owner: owner0x, subject } as ApiOk);
+      // Return the platform owner (useful for preview) and echo subject
+      return NextResponse.json({ ok: true, owner: owner0x, subject } as ApiOk);
     }
 
 
-    // AVATAR (topic = userNo0x; feed owner = platform signer) - Deleted
-    // ---------------------------
     // ---------------------------
     // AVATAR (topic = subjectNo0x; feed owner = platform signer)
+    // AUTHENTICATED: requires signature or capability
     // ---------------------------
     if (kind === "avatar") {
-    const p = payload as AvatarPayload;
+      const p = payload as unknown as AuthenticatedAvatarPayload;
 
-    // Validate inputs
-    const imageRef = String(p?.imageRef ?? "").trim().toLowerCase();
-    if (!/^[0-9a-f]{64}$/i.test(imageRef)) {
+      // Validate inputs
+      const imageRef = String(p?.imageRef ?? "").trim().toLowerCase();
+      if (!/^[0-9a-f]{64}$/i.test(imageRef)) {
         return NextResponse.json({ ok: false, error: "Invalid imageRef (expect 64-hex)" }, { status: 400 });
-    }
+      }
 
-    const subject = String(p?.subject ?? "").toLowerCase() as `0x${string}`;
-    if (!/^0x[0-9a-f]{40}$/i.test(subject)) {
+      // Keep original case for signature verification, lowercase for storage
+      const subjectRaw = String(p?.subject ?? "") as `0x${string}`;
+      const subject = subjectRaw.toLowerCase() as `0x${string}`;
+      if (!/^0x[0-9a-f]{40}$/i.test(subject)) {
         return NextResponse.json({ ok: false, error: "Invalid subject address" }, { status: 400 });
-    }
+      }
 
-    // Per-user topic (derived from SUBJECT)
-    const t = topicAvatar(subject.slice(2).toLowerCase());
+      const signature = p?.signature;
+      if (!signature) {
+        return NextResponse.json({ ok: false, error: "Missing signature" }, { status: 400 });
+      }
 
-    // Writer = platform signer (owner), topic = per-user
-    const w = bee.makeFeedWriter(t, signer);
-    await w.uploadPayload(
+      // Create canonical message for signature verification (use original case!)
+      const signMessage = JSON.stringify({ kind: "avatar", subject: subjectRaw, imageRef });
+
+      // Verify signature (EIP-191 personal sign)
+      let recovered: string;
+      try {
+        recovered = getAddress(verifyMessage(signMessage, signature));
+      } catch (e) {
+        console.error("[api/profile avatar] Signature verification failed:", e);
+        return NextResponse.json({ ok: false, error: "Invalid signature" }, { status: 400 });
+      }
+
+      // Authorization based on posting mode
+      if (postingKind === "local") {
+        // LOCAL user: signer must be the subject (their local posting key IS their identity)
+        if (!addrEq(recovered, subject)) {
+          return NextResponse.json({ ok: false, error: "BAD_SIGNATURE" }, { status: 403 });
+        }
+        console.log("[api/profile avatar] LOCAL user verified:", recovered);
+
+      } else if (postingKind === "web3") {
+        // WEB3 user: must provide capability to prove authorization
+        if (!capability) {
+          return NextResponse.json({
+            ok: false,
+            error: "CAPABILITY_REQUIRED",
+            message: "Web3 users must provide capability bundle for authorization"
+          }, { status: 401 });
+        }
+
+        // Verify the capability (EIP-712 signature from parent)
+        const capResult = verifyCapability(capability, recovered);
+        if (!capResult.valid) {
+          console.warn("[api/profile avatar] Capability verification failed:", capResult.error);
+          return NextResponse.json({
+            ok: false,
+            error: "INVALID_CAPABILITY",
+            message: capResult.error
+          }, { status: 403 });
+        }
+
+        // Check that the subject matches the verified parent
+        if (!addrEq(subject, capResult.parentAddress)) {
+          console.warn(
+            `[api/profile avatar] Subject mismatch: subject=${subject}, verified parent=${capResult.parentAddress}`
+          );
+          return NextResponse.json({
+            ok: false,
+            error: "SUBJECT_MISMATCH",
+            message: "Subject must match the parent address from capability"
+          }, { status: 403 });
+        }
+
+        console.log(`[api/profile avatar] WEB3 user verified: parent=${capResult.parentAddress}, safe=${capResult.safeAddress}`);
+
+      } else {
+        // No posting kind header - fall back to direct signature check
+        if (!addrEq(recovered, subject)) {
+          return NextResponse.json({ ok: false, error: "BAD_SIGNATURE" }, { status: 403 });
+        }
+        console.log("[api/profile avatar] Direct signature verified:", recovered);
+      }
+
+      // Per-user topic (derived from SUBJECT)
+      const t = topicAvatar(subject.slice(2).toLowerCase());
+
+      // Writer = platform signer (owner), topic = per-user
+      const w = bee.makeFeedWriter(t, signer);
+      await w.uploadPayload(
         POSTAGE_BATCH_ID,
         JSON.stringify({ v: 1, owner: owner0x, subject, imageRef })
-    );
+      );
 
-    return NextResponse.json({ ok: true, owner: owner0x, subject } as ApiOk);
+      return NextResponse.json({ ok: true, owner: owner0x, subject } as ApiOk);
     }
 
 
@@ -134,8 +293,47 @@ export async function POST(req: Request) {
         return NextResponse.json({ ok: false, error: "subject/sig must be hex strings" }, { status: 400 });
       }
 
-      // TODO: VERIFY the signature with ethers.verifyTypedData(domain, types, message, sig)
-      // and ensure the recovered address matches `subject`. If mismatch => 400.
+      // SECURITY: Verify the EIP-712 signature
+      // Extract domain, types, and message from typedData
+      const { domain, types, message } = typed as {
+        domain: Record<string, unknown>;
+        types: Record<string, Array<{ name: string; type: string }>>;
+        message: Record<string, unknown>;
+      };
+
+      if (!domain || !types || !message) {
+        return NextResponse.json({
+          ok: false,
+          error: "Invalid typedData: missing domain, types, or message"
+        }, { status: 400 });
+      }
+
+      // Remove EIP712Domain from types if present (ethers handles it automatically)
+      const typesWithoutDomain = { ...types } as Record<string, Array<{ name: string; type: string }>>;
+      delete typesWithoutDomain.EIP712Domain;
+
+      // Verify the signature and recover the signer address
+      let recoveredAddress: string;
+      try {
+        recoveredAddress = verifyTypedData(domain, typesWithoutDomain, message, sig);
+      } catch (e) {
+        console.error("[api/profile verify] Signature verification failed:", e);
+        return NextResponse.json({
+          ok: false,
+          error: "Invalid signature: verification failed"
+        }, { status: 400 });
+      }
+
+      // CRITICAL: Check if recovered address matches claimed subject
+      if (recoveredAddress.toLowerCase() !== subject.toLowerCase()) {
+        console.warn(`[api/profile verify] Address mismatch: claimed ${subject}, recovered ${recoveredAddress}`);
+        return NextResponse.json({
+          ok: false,
+          error: "Signature does not match claimed subject address"
+        }, { status: 403 });
+      }
+
+      console.log(`[api/profile verify] Signature verified for ${subject}`);
 
       // If valid, store a verification record under a dedicated feed:
       const t = topicVerify(ownerNo0x);

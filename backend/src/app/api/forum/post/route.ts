@@ -9,13 +9,11 @@ import type { SignedPostPayload, SignatureType } from "@/lib/forum/types";
 import { topicThread, topicBoard } from "@/lib/forum/topics";
 import { updateBoardFeed, updateThreadFeed } from "@/lib/forum/publisher";
 import { sha256HexString } from "@/lib/forum/crypto";
+import { verifyCapability, type CapabilityBundle } from "@/lib/auth/verify-capability";
 
 const bee = new Bee(BEE_URL);
 
 type HexAddr = `0x${string}`;
-type LocalSession = { kind: "local"; safe: HexAddr };
-type Web3Session = { kind: "web3"; parent: HexAddr; postingKey: HexAddr; postAuth: "parent-bound" | "blocked" };
-type Session = LocalSession | Web3Session;
 
 function isHexAddr(s?: string | null): s is HexAddr {
   return !!s && /^0x[0-9a-fA-F]{40}$/.test(s);
@@ -25,38 +23,12 @@ function addrEq(a?: string | null, b?: string | null): boolean {
   try { return getAddress(a) === getAddress(b); } catch { return false; }
 }
 
-/** Read posting session from request *headers* only (keeps types simple). */
-function readSessionFromRequest(req: NextRequest): Session | null {
-  const h = req.headers;
-  const kind = h.get("x-posting-kind");
-
-  if (kind === "local") {
-    const safe = h.get("x-posting-safe");
-    return isHexAddr(safe) ? { kind: "local", safe: getAddress(safe) as HexAddr } : null;
-  }
-  if (kind === "web3") {
-    const parent = h.get("x-posting-parent");
-    const postingKey = h.get("x-posting-key");
-    const postAuth = h.get("x-posting-auth"); // expect "parent-bound"
-    if (isHexAddr(parent) && isHexAddr(postingKey) && postAuth === "parent-bound") {
-      return {
-        kind: "web3",
-        parent: getAddress(parent) as HexAddr,
-        postingKey: getAddress(postingKey) as HexAddr,
-        postAuth: "parent-bound",
-      };
-    }
-    return null;
-  }
-  return null;
-}
-
-
-
 type PostRequest = {
   payload: SignedPostPayload;
   signature: `0x${string}`;
   signatureType: SignatureType;
+  // Capability is required for web3 users to prove authorization
+  capability?: CapabilityBundle;
 };
 
 type ReferenceLike = string | { toString(): string };
@@ -71,7 +43,8 @@ function refLikeToHex(ref: ReferenceLike): string {
 export async function POST(req: NextRequest) {
   const t0 = Date.now(); // ◀️ START total
   try {
-    const { payload, signature, signatureType } = (await req.json()) as PostRequest;
+    const body = (await req.json()) as PostRequest;
+    const { payload, signature, signatureType, capability } = body;
 
     // 0) Basic payload guards
     if (!payload?.boardId || typeof payload.boardId !== "string") {
@@ -81,36 +54,70 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "BAD_SUBJECT" }, { status: 400 });
     }
 
-    // 1) Verify signer (EIP-191 only for now)##
-    // 1) Verify signer (EIP-191 only for now)
+    // 1) Verify post signature (EIP-191 only for now)
     const tVerify0 = Date.now();
     if (signatureType !== "eip191") {
       return NextResponse.json({ ok: false, error: "UNSUPPORTED_SIGNATURE_TYPE" }, { status: 400 });
     }
     const recovered = getAddress(verifyMessage(JSON.stringify(payload), signature)); // signer of post payload
-    console.log("[api:post] verify ms", Date.now() - tVerify0);
+    console.log("[api:post] verify post signature ms", Date.now() - tVerify0);
 
-    // 1b) Authorize (LOCAL vs WEB3)
-    const sess = readSessionFromRequest(req);
+    // 2) Authorize: Determine if LOCAL or WEB3 user
+    // Check header to determine auth mode
+    const postingKind = req.headers.get("x-posting-kind");
 
-    // Fallback: keep your existing local behavior if no headers were sent
-    if (!sess) {
+    if (postingKind === "local") {
+      // LOCAL user: subject and signer must be the same (their local posting key)
       if (!addrEq(recovered, payload.subject)) {
         return NextResponse.json({ ok: false, error: "BAD_SIGNATURE" }, { status: 403 });
       }
-    } else if (sess.kind === "local") {
-      // LOCAL: subject and signer are the local posting key
-      if (!(addrEq(recovered, sess.safe) && addrEq(payload.subject, sess.safe))) {
-        return NextResponse.json({ ok: false, error: "BAD_SIGNATURE" }, { status: 403 });
+      console.log("[api:post] LOCAL user verified:", recovered);
+
+    } else if (postingKind === "web3") {
+      // WEB3 user: MUST provide capability to prove authorization
+      if (!capability) {
+        return NextResponse.json({
+          ok: false,
+          error: "CAPABILITY_REQUIRED",
+          message: "Web3 users must provide capability bundle for authorization"
+        }, { status: 401 });
       }
+
+      // Verify the capability (EIP-712 signature from parent)
+      const capResult = verifyCapability(capability, recovered);
+      if (!capResult.valid) {
+        console.warn("[api:post] Capability verification failed:", capResult.error);
+        return NextResponse.json({
+          ok: false,
+          error: "INVALID_CAPABILITY",
+          message: capResult.error
+        }, { status: 403 });
+      }
+
+      // Check that the payload subject matches the verified parent
+      if (!addrEq(payload.subject, capResult.parentAddress)) {
+        console.warn(
+          `[api:post] Subject mismatch: payload.subject=${payload.subject}, verified parent=${capResult.parentAddress}`
+        );
+        return NextResponse.json({
+          ok: false,
+          error: "SUBJECT_MISMATCH",
+          message: "Payload subject must match the parent address from capability"
+        }, { status: 403 });
+      }
+
+      console.log(`[api:post] WEB3 user verified: parent=${capResult.parentAddress}, safe=${capResult.safeAddress}`);
+
     } else {
-      // WEB3: signer === postingKey, subject === parent, and posting is enabled
-      if (!(sess.postAuth === "parent-bound" && addrEq(recovered, sess.postingKey) && addrEq(payload.subject, sess.parent))) {
+      // No kind header - fall back to simple direct signature check
+      // (for backwards compatibility or direct wallet signing)
+      if (!addrEq(recovered, payload.subject)) {
         return NextResponse.json({ ok: false, error: "BAD_SIGNATURE" }, { status: 403 });
       }
+      console.log("[api:post] Direct signature verified:", recovered);
     }
 
-    // 2) Validate refs + content hash
+    // 3) Validate refs + content hash
     if (payload.threadRef && !is64HexNo0x(payload.threadRef)) {
       return NextResponse.json({ ok: false, error: "BAD_THREAD_REF" }, { status: 400 });
     }
@@ -145,8 +152,8 @@ export async function POST(req: NextRequest) {
       v: 1 as const,
     };
     const tUpload0 = Date.now();
-    const body = new TextEncoder().encode(JSON.stringify(canonical));
-    const upload = (await bee.uploadData(POSTAGE_BATCH_ID, body)) as { reference: ReferenceLike };
+    const postData = new TextEncoder().encode(JSON.stringify(canonical));
+    const upload = (await bee.uploadData(POSTAGE_BATCH_ID, postData)) as { reference: ReferenceLike };
     const postRefHex = refLikeToHex(upload.reference).toLowerCase();
     console.log("[api:post] upload /bytes ms", Date.now() - tUpload0);
 

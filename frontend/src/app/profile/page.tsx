@@ -14,7 +14,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
+import StaticLink from "@/components/StaticLink";
 
 import { ProfileProvider } from "@/lib/profile/context";
 import { BEE_URL } from "@/config/swarm";
@@ -100,9 +100,9 @@ export default function ProfilePage() {
   return (
     <main className="min-h-dvh bg-neutral-50 dark:bg-gray-900 transition-colors p-4">
       <div className="mb-3 flex items-center justify-between">
-        <Link href="/" className="inline-flex items-center px-3 py-1.5 text-sm rounded border dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-750">
+        <StaticLink href="/" className="inline-flex items-center px-3 py-1.5 text-sm rounded border dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-750">
           ← Home
-        </Link>
+        </StaticLink>
         <ThemeToggle />
       </div>
 

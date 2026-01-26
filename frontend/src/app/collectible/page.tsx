@@ -16,7 +16,7 @@
 import { useState, useEffect, useCallback, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Image from "next/image";
-import Link from "next/link";
+import StaticLink from "@/components/StaticLink";
 import usePostingIdentity from "@/lib/auth/usePostingIdentity";
 import ThemeToggle from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
@@ -311,9 +311,9 @@ function CollectibleContent() {
             {error || "Loading..."}
           </p>
           {error && (
-            <Link href="/dashboard/" className="mt-4 inline-block">
+            <StaticLink href="/dashboard/" className="mt-4 inline-block">
               <Button variant="secondary">Back to Dashboard</Button>
-            </Link>
+            </StaticLink>
           )}
         </div>
       </div>
@@ -324,9 +324,9 @@ function CollectibleContent() {
     <main className="min-h-dvh bg-neutral-50 dark:bg-gray-900 pb-20 transition-colors">
       <header className="sticky top-0 z-10 bg-white/80 dark:bg-gray-800/80 backdrop-blur border-b dark:border-gray-700">
         <div className="mx-auto max-w-3xl px-4 h-14 flex items-center justify-between">
-          <Link href="/dashboard/" className="font-semibold text-gray-900 dark:text-gray-100">
+          <StaticLink href="/dashboard/" className="font-semibold text-gray-900 dark:text-gray-100">
             ← Back
-          </Link>
+          </StaticLink>
           <ThemeToggle />
         </div>
       </header>
@@ -456,7 +456,7 @@ function CollectibleContent() {
 
                 {id.kind === "none" && !showClaimConfirm && (
                   <p className="text-xs text-center text-gray-500 dark:text-gray-500">
-                    <Link href="/" className="underline">Log in</Link> to claim this collectible
+                    <StaticLink href="/" className="underline">Log in</StaticLink> to claim this collectible
                   </p>
                 )}
               </>

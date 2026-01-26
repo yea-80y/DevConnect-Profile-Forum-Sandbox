@@ -8,9 +8,9 @@
 // - Renders a Composer to start a new thread
 // -----------------------------------------------------------------------------
 
-import Link from "next/link"
+import StaticLink from "@/components/StaticLink"
 import { useEffect, useState, Suspense } from "react"
-import { useRouter, useSearchParams } from "next/navigation"
+import { useSearchParams } from "next/navigation"
 import { BOARD_ID } from "@/lib/forum/boardID"
 import { Composer } from "@/components/forum/Composer"
 import { PostItem } from "@/components/forum/PostItem"
@@ -33,7 +33,6 @@ const asCanon = (payload: CanonicalPost["payload"]): CanonicalPost =>
 
 
 function ForumContent() {
-  const router = useRouter()
   const searchParams = useSearchParams()
   const threadParam = searchParams.get("thread")?.toLowerCase() || null
 
@@ -153,7 +152,11 @@ function ForumContent() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <button
-              onClick={() => router.push(isThreadView ? '/forum' : '/dashboard')}
+              onClick={() => {
+                const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+                const target = isThreadView ? '/forum/' : '/dashboard/';
+                window.location.href = basePath ? `${basePath}${target}` : target;
+              }}
               className="text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 underline"
             >
               {isThreadView ? 'Back' : 'Back to Dashboard'}
@@ -221,17 +224,20 @@ function ForumContent() {
         }}
       />
 
-        {/* list of threads */}
+        {/* list of threads/posts */}
         <section className="space-y-3">
-          {busy && <div className="text-sm text-gray-500 dark:text-gray-400">Loading board…</div>}
+          {busy && <div className="text-sm text-gray-500 dark:text-gray-400">{isThreadView ? 'Loading thread…' : 'Loading board…'}</div>}
           {err && <div className="text-sm text-red-600 dark:text-red-400">{err}</div>}
           {!busy && !err && threads.length === 0 && (
-            <div className="text-sm text-gray-500 dark:text-gray-400">No threads yet. Start one!</div>
+            <div className="text-sm text-gray-500 dark:text-gray-400">{isThreadView ? 'No posts in this thread.' : 'No threads yet. Start one!'}</div>
           )}
-        {threads.map((ref) => {
+        {/* In thread view, reverse order so original post is at top, replies below */}
+        {(isThreadView ? [...threads].reverse() : threads).map((ref, index, arr) => {
           const c = firstPosts[ref]
           const author = c?.payload.subject ?? ""
           const authorLc = author.toLowerCase()
+          // In thread view, the first post (index 0) is the original post
+          const isOriginalPost = isThreadView && index === 0
 
           const postItem = (
             <PostItem
@@ -249,8 +255,8 @@ function ForumContent() {
               createdAt={c?.payload.createdAt ?? 0}
               boardId={BOARD_ID}
               threadRef={isThreadView ? threadParam : ref}
-              isRoot={!isThreadView}
-              onMutedThread={!isThreadView ? () => {
+              isRoot={!isThreadView || isOriginalPost}
+              onMutedThread={(!isThreadView || isOriginalPost) ? () => {
                 setThreads((prev) => prev.filter((r) => r !== ref));
                 setFirstPosts((prev) => {
                   const next = { ...prev };
@@ -264,9 +270,9 @@ function ForumContent() {
           return isThreadView ? (
             postItem
           ) : (
-            <Link key={ref} href={`/forum?thread=${ref}`} className="block hover:opacity-90 transition">
+            <StaticLink key={ref} href={`/forum/?thread=${ref}`} className="block hover:opacity-90 transition">
               {postItem}
-            </Link>
+            </StaticLink>
           )
           })}
         </section>

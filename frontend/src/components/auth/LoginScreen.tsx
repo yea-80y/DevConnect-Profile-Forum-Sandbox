@@ -2,7 +2,6 @@
 "use client"
 
 import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
 import Image from "next/image";
 import usePostingIdentity from "@/lib/auth/usePostingIdentity";
 import { Button } from "@/components/ui/button";
@@ -64,7 +63,6 @@ async function warmHandshake(): Promise<void> {
  */
 export default function LoginScreen() {
   const id = usePostingIdentity();
-  const router = useRouter();
 
   // (Optional) disable buttons while login is in progress
   const [isBusy, setIsBusy] = useState(false);
@@ -84,19 +82,23 @@ export default function LoginScreen() {
   // Auto-navigate when auth state is ready AND profile load has started
   // ⚠️ MUST be before early return to satisfy Rules of Hooks
   useEffect(() => {
+    // Use full page navigation to avoid RSC fetch issues on static export (eth.limo/Swarm)
+    const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+    const dashboardUrl = basePath ? `${basePath}/dashboard/` : "/dashboard/";
+
     // Web3 & Local: navigate after profile load starts (or immediately for local)
     if (id.ready && id.kind === "local" && isBusy) {
-      router.push("/dashboard/");
+      window.location.href = dashboardUrl;
       return;
     }
 
     // Web3: wait for profile load to start
     if (id.ready && id.kind === "web3" && isBusy && readyToNavigate) {
       console.log("[LoginScreen] Navigating to dashboard");
-      router.push("/dashboard/");
+      window.location.href = dashboardUrl;
       return;
     }
-  }, [id.ready, id.kind, isBusy, readyToNavigate, router]);
+  }, [id.ready, id.kind, isBusy, readyToNavigate]);
 
   // Keep the UI quiet while rehydrating
   if (!id.ready) {

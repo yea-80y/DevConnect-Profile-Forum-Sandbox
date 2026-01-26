@@ -4,10 +4,10 @@
  */
 
 import { verifyTypedData } from "ethers";
-import type { Eip1193WithSelected, CapabilityBundle } from "../types";
+import type { Eip1193WithSelected, CapabilityBundle, EncryptedJSON } from "../types";
 import { CAP_DOMAIN, CAP_TYPES, K_ENC_KEYSTORE, K_ENC_CAP } from "../constants";
-import { getKV, putKV } from "../storage/indexeddb";
-import { ensureDeviceKey, encryptJSON } from "../storage/encryption";
+import { getKV, putKV, delKV } from "../storage/indexeddb";
+import { ensureDeviceKey, encryptJSON, decryptJSON } from "../storage/encryption";
 import { requestPostingCapabilitySignature } from "../signatures/posting-capability";
 import { verifyCapabilityLocal } from "../signatures/verification";
 
@@ -33,11 +33,42 @@ export async function requestPostingCapability(
   error?: string;
 }> {
   try {
-    // Check if capability already exists
-    const existingCap = await getKV(K_ENC_CAP);
+    // Check if capability already exists AND matches current parent
+    const existingCap = await getKV<EncryptedJSON>(K_ENC_CAP);
     if (existingCap) {
-      console.log("[requestPosting] Capability already exists");
-      return { success: true }; // Already authorized
+      // Verify existing capability matches the current parent
+      try {
+        const deviceKey = await ensureDeviceKey();
+        const { capability } = await decryptJSON<{
+          capability: { parent: string; safe: string };
+        }>(deviceKey, existingCap);
+
+        // If the capability parent matches current parent, use existing
+        if (capability.parent.toLowerCase() === parentAddress.toLowerCase()) {
+          // Also verify we have the matching keystore
+          const existingKS = await getKV<EncryptedJSON>(K_ENC_KEYSTORE);
+          if (existingKS) {
+            const { keystore } = await decryptJSON<{ keystore: string }>(deviceKey, existingKS);
+            const wallet = await import("ethers").then(m => m.Wallet.fromEncryptedJson(keystore, "dummy-pass"));
+
+            // Verify the keystore matches the capability's safe address
+            if (wallet.address.toLowerCase() === capability.safe.toLowerCase()) {
+              console.log("[requestPosting] Existing capability is valid for current parent");
+              return { success: true, safeAddress: wallet.address };
+            }
+          }
+        }
+
+        // Capability doesn't match - clear old data and request new
+        console.log("[requestPosting] Existing capability is for different parent, clearing...");
+        await delKV(K_ENC_CAP);
+        await delKV(K_ENC_KEYSTORE);
+      } catch (decryptErr) {
+        console.warn("[requestPosting] Failed to verify existing capability:", decryptErr);
+        // Clear corrupted data
+        await delKV(K_ENC_CAP);
+        await delKV(K_ENC_KEYSTORE);
+      }
     }
 
     const eth = (window as { ethereum?: Eip1193WithSelected }).ethereum;

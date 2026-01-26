@@ -41,6 +41,7 @@ import { invalidateAvatarCache } from "@/lib/avatar";
 import usePostingIdentity from "@/lib/auth/usePostingIdentity";
 import { useWalletConnection } from "@/lib/wallet/useWalletConnection";
 import WalletWarningBanner from "@/components/wallet/WalletWarningBanner";
+import type { CapabilityBundle } from "@/lib/auth/types";
 
 function to64Hex(s: string | null | undefined): string {
   if (!s) throw new Error("missing ref")
@@ -60,11 +61,29 @@ type Hex0x = `0x${string}`
 
 /* -------------------------------- API helper ------------------------------ */
 
-async function postProfile(body: unknown): Promise<{ ok: true; owner: Hex0x } | never> {
+async function postProfile(
+  body: unknown,
+  options?: {
+    postingKind?: "local" | "web3";
+    capability?: CapabilityBundle;
+  }
+): Promise<{ ok: true; owner: Hex0x } | never> {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+
+  // Add posting kind header if specified
+  if (options?.postingKind) {
+    headers["x-posting-kind"] = options.postingKind;
+  }
+
+  // Include capability in body for web3 users
+  const finalBody = options?.capability
+    ? { ...body as object, capability: options.capability }
+    : body;
+
   const r = await fetch(apiUrl("/api/profile"), {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
+    headers,
+    body: JSON.stringify(finalBody),
   });
   if (!r.ok) {
     const text = await r.text().catch(() => "");
@@ -219,6 +238,11 @@ export default function ProfileTab() {
       if (!POSTAGE_BATCH_ID) throw new Error("Set NEXT_PUBLIC_POSTAGE_BATCH_ID in .env.local");
       if (!subject0x) throw new Error("No active account – create/select one on the Accounts/Home screen first.");
 
+      // Web3 users must have authorized posting capability
+      if (id.kind === "web3" && id.postAuth !== "parent-bound") {
+        throw new Error("Please authorize posting first. Your wallet will ask you to sign a message.");
+      }
+
       // Compute once, reuse in both blocks (name + avatar)
       const subjectNo0x = subject0x.slice(2).toLowerCase();
 
@@ -238,12 +262,23 @@ export default function ProfileTab() {
         setShowPreviewInProfile(true);
       }
 
+      // Get capability bundle for web3 users
+      const capability = id.kind === "web3" ? await id.getCapabilityBundle() : undefined;
+      const postingKind = id.kind === "web3" ? "web3" : id.kind === "local" ? "local" : undefined;
+
       // (1) Save display name (optional) → topic keyed by subject
       if (nameToSave) {
-        const { owner } = await postProfile({
-          kind: "name",
-          payload: { name: nameToSave, subject: subject0x }
-        });
+        // Create signed payload
+        const signMessage = JSON.stringify({ kind: "name", subject: subject0x, name: nameToSave });
+        const signature = await id.signPost(signMessage) as `0x${string}`;
+
+        const { owner } = await postProfile(
+          {
+            kind: "name",
+            payload: { name: nameToSave, subject: subject0x, signature }
+          },
+          { postingKind, capability: capability ?? undefined }
+        );
         setOwner0x(owner);
         // NEW: persist owner so ProfileProvider can see it on mount
         try { localStorage.setItem("woco.owner0x", owner); } catch {}
@@ -251,17 +286,17 @@ export default function ProfileTab() {
         // ✅ No need for manual caching - applyLocalUpdate() already did it above
         // ProfileProvider persists to localStorage automatically via its useEffect
 
-      // DEBUG: feed GET for the name (topic derived from SUBJECT)
-      const topicStr = `${FEED_NS}/name/${subjectNo0x}`;
-      const topicHex = Topic.fromString(topicStr).toString();
-      console.log("[profile] name saved via platform signer", {
-        feedOwner0x: owner,
-        subject0x,
-        topicStr,
-        topicHex,
-        feedGET: `${BEE_URL}/feeds/${owner}/${topicHex}`,
-      });
-    }
+        // DEBUG: feed GET for the name (topic derived from SUBJECT)
+        const topicStr = `${FEED_NS}/name/${subjectNo0x}`;
+        const topicHex = Topic.fromString(topicStr).toString();
+        console.log("[profile] name saved via platform signer", {
+          feedOwner0x: owner,
+          subject0x,
+          topicStr,
+          topicHex,
+          feedGET: `${BEE_URL}/feeds/${owner}/${topicHex}`,
+        });
+      }
 
       // (2) Upload avatar (if chosen) → immutable BZZ ref → save avatar feed for SUBJECT
       if (avatarFile) {
@@ -275,10 +310,17 @@ export default function ProfileTab() {
           bzz: `${BEE_URL}/bzz/${cleanRef}`,
         });
 
-        const { owner } = await postProfile({
-          kind: "avatar",
-          payload: { imageRef: cleanRef, subject: subject0x }
-        });
+        // Create signed payload
+        const signMessage = JSON.stringify({ kind: "avatar", subject: subject0x, imageRef: cleanRef });
+        const signature = await id.signPost(signMessage) as `0x${string}`;
+
+        const { owner } = await postProfile(
+          {
+            kind: "avatar",
+            payload: { imageRef: cleanRef, subject: subject0x, signature }
+          },
+          { postingKind, capability: capability ?? undefined }
+        );
         setOwner0x(owner);
         try { localStorage.setItem("woco.owner0x", owner); } catch {}
 
@@ -409,6 +451,17 @@ export default function ProfileTab() {
       {/* Wallet disconnected warning (Web3 users only) */}
       {id.kind === "web3" && wallet.isConnected === false && (
         <WalletWarningBanner onReconnect={wallet.reconnect} />
+      )}
+
+      {/* Web3 users need to authorize posting before updating profile */}
+      {id.kind === "web3" && id.postAuth === "blocked" && (
+        <div className="rounded border border-amber-300 dark:border-amber-700 p-4 bg-amber-50/80 dark:bg-amber-900/30">
+          <div className="font-semibold text-amber-800 dark:text-amber-200 mb-2">Authorize Profile Updates</div>
+          <p className="text-sm text-amber-700 dark:text-amber-300 mb-3">
+            To update your profile, authorize a secure posting account. Your wallet will ask you to sign a message (EIP-712).
+          </p>
+          <Button onClick={() => id.requestPostingCapability()}>Authorize Posting</Button>
+        </div>
       )}
 
       {/* Write panel */}

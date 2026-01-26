@@ -11,7 +11,7 @@
 //     woco_subject0x = 0xParentAddress
 // - "isAdmin" is true only when BOTH are true:
 //   (1) address is in ADMIN_ADDRESSES (env allowlist), and
-//   (2) dc_admin cookie (set by /api/auth/admin/elevate) exists.
+//   (2) dc_admin cookie contains verified address from admin/elevate
 //
 // This avoids "auto-admin" just by visiting the page.
 // ----------------------------------------------------
@@ -32,6 +32,31 @@ const SUBJECT_COOKIE = "woco_subject0x";    // set by client after initial EIP-7
 const SUBJECT_HEADER = "x-subject-address"; // for cross-origin dev/prod setup
 const ADMIN_FLAG_COOKIE = "dc_admin";       // set by /api/auth/admin/elevate (httpOnly)
 
+/**
+ * Get verified admin address from httpOnly cookie
+ * The admin elevation endpoint sets this after signature verification
+ * Format: "1:{address}" where address is cryptographically verified
+ */
+function getVerifiedAdminAddress(req: NextRequest): `0x${string}` | null {
+  const adminCookie = req.cookies.get(ADMIN_FLAG_COOKIE)?.value;
+  if (!adminCookie) return null;
+
+  // Parse format "1:{address}"
+  const match = adminCookie.match(/^1:(0x[0-9a-fA-F]{40})$/i);
+  if (!match) {
+    // Backwards compatibility: old format was just "1"
+    if (adminCookie === "1") {
+      const header = req.headers.get(SUBJECT_HEADER);
+      const cookie = req.cookies.get(SUBJECT_COOKIE)?.value;
+      const v = header || cookie;
+      return v && /^0x[0-9a-fA-F]{40}$/.test(v) ? (v as `0x${string}`) : null;
+    }
+    return null;
+  }
+
+  return match[1].toLowerCase() as `0x${string}`;
+}
+
 export async function GET(req: NextRequest) {
   // 1) Who is logged in? (parent/web3 address; null if not logged in)
   // Try header first (cross-origin), then cookie (same-origin)
@@ -44,14 +69,16 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: true, address: null, isAdmin: false });
   }
 
-  // 2) Check if their address is allow-listed for admin
-  const onAllowlist = ADMIN_ADDRESSES.includes(parent.toLowerCase());
+  // 2) Check if they have a verified admin address from elevation
+  const verifiedAdminAddress = getVerifiedAdminAddress(req);
 
-  // 3) Check if they have explicitly elevated to admin this session
-  const hasAdminFlag = req.cookies.get(ADMIN_FLAG_COOKIE)?.value === "1";
-
-  // Admin requires BOTH allowlist + elevate flag
-  const isAdmin = onAllowlist && hasAdminFlag;
+  // 3) Admin requires verified address that matches parent AND is on allowlist
+  let isAdmin = false;
+  if (verifiedAdminAddress) {
+    const addressesMatch = verifiedAdminAddress.toLowerCase() === parent.toLowerCase();
+    const onAllowlist = ADMIN_ADDRESSES.includes(verifiedAdminAddress.toLowerCase());
+    isAdmin = addressesMatch && onAllowlist;
+  }
 
   return NextResponse.json({
     ok: true,

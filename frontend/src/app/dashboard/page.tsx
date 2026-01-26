@@ -18,7 +18,7 @@
  */
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
+import StaticLink from "@/components/StaticLink";
 import ProfileView from "../profile/ProfileView";
 import usePostingIdentity from "@/lib/auth/usePostingIdentity";
 import PostingAuthNudge from "@/components/auth/PostingAuthNudge";
@@ -275,10 +275,10 @@ export default function Home() {
           <span className="font-semibold text-gray-900 dark:text-gray-100">Devconnect</span>
           <div className="flex items-center gap-4">
             <ThemeToggle />
-            <Link href="/account" className="text-sm text-gray-900 dark:text-gray-100 underline">Accounts</Link>
-            <Link href="/profile" className="text-sm text-gray-900 dark:text-gray-100 underline">Edit profile</Link>
-            <Link href="/forum" className="text-sm text-gray-900 dark:text-gray-100 underline">Forum</Link>
-            <Link href="/zupass-explorer" className="text-sm text-gray-900 dark:text-gray-100 underline">Zupass Explorer</Link>
+            <StaticLink href="/account" className="text-sm text-gray-900 dark:text-gray-100 underline">Accounts</StaticLink>
+            <StaticLink href="/profile" className="text-sm text-gray-900 dark:text-gray-100 underline">Edit profile</StaticLink>
+            <StaticLink href="/forum" className="text-sm text-gray-900 dark:text-gray-100 underline">Forum</StaticLink>
+            <StaticLink href="/zupass-explorer" className="text-sm text-gray-900 dark:text-gray-100 underline">Zupass Explorer</StaticLink>
           </div>
         </div>
       </header>
@@ -404,7 +404,7 @@ export default function Home() {
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                 {myCollection.map((entry) => (
-                  <Link
+                  <StaticLink
                     key={`${entry.seriesId}-${entry.edition}`}
                     href={`/collectible/?id=${entry.seriesId}`}
                     className="block rounded-lg border dark:border-gray-700 overflow-hidden hover:border-blue-500 dark:hover:border-blue-400 transition group"
@@ -441,7 +441,7 @@ export default function Home() {
                         Claimed {new Date(entry.claimedAt).toLocaleDateString()}
                       </div>
                     </div>
-                  </Link>
+                  </StaticLink>
                 ))}
               </div>
             )}
@@ -452,9 +452,9 @@ export default function Home() {
         <section className="rounded-xl bg-white dark:bg-gray-800 border dark:border-gray-700 shadow-sm p-4">
           <div className="flex items-center justify-between mb-3">
             <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">POD Collectibles</div>
-            <Link href="/create-collectible" className="text-xs text-blue-600 dark:text-blue-400 hover:underline">
+            <StaticLink href="/create-collectible" className="text-xs text-blue-600 dark:text-blue-400 hover:underline">
               Create New
-            </Link>
+            </StaticLink>
           </div>
           <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">
             Browse and claim limited edition collectibles, or create your own.
@@ -467,11 +467,11 @@ export default function Home() {
               </div>
             ) : collectibles.length === 0 ? (
               <div className="text-center py-8 text-gray-500 dark:text-gray-400 text-sm">
-                No collectibles yet. <Link href="/create-collectible" className="underline text-blue-600 dark:text-blue-400">Create the first one!</Link>
+                No collectibles yet. <StaticLink href="/create-collectible" className="underline text-blue-600 dark:text-blue-400">Create the first one!</StaticLink>
               </div>
             ) : (
               collectibles.map((entry) => (
-                <Link
+                <StaticLink
                   key={entry.seriesId}
                   href={`/collectible/?id=${entry.seriesId}`}
                   className="block rounded-lg border dark:border-gray-700 p-3 hover:bg-gray-50 dark:hover:bg-gray-750 transition"
@@ -482,7 +482,7 @@ export default function Home() {
                   <div className="text-xs text-gray-500 dark:text-gray-500 mt-1">
                     {entry.claimedCount}/{entry.totalSupply} claimed
                   </div>
-                </Link>
+                </StaticLink>
               ))
             )}
           </div>
@@ -490,35 +490,35 @@ export default function Home() {
 
         {/* Nav cards */}
         <section className="grid grid-cols-2 gap-3">
-          <Link href="/programme" className="rounded-xl bg-white dark:bg-gray-800 border dark:border-gray-700 shadow-sm p-4 hover:bg-gray-50 dark:hover:bg-gray-750 transition">
+          <StaticLink href="/programme" className="rounded-xl bg-white dark:bg-gray-800 border dark:border-gray-700 shadow-sm p-4 hover:bg-gray-50 dark:hover:bg-gray-750 transition">
             <div className="text-sm font-medium text-gray-900 dark:text-gray-100">Programme</div>
             <div className="text-xs text-gray-500 dark:text-gray-400">Browse sessions & schedule</div>
-          </Link>
+          </StaticLink>
 
-          <Link href="/map" className="rounded-xl bg-white dark:bg-gray-800 border dark:border-gray-700 shadow-sm p-4 hover:bg-gray-50 dark:hover:bg-gray-750 transition">
+          <StaticLink href="/map" className="rounded-xl bg-white dark:bg-gray-800 border dark:border-gray-700 shadow-sm p-4 hover:bg-gray-50 dark:hover:bg-gray-750 transition">
             <div className="text-sm font-medium text-gray-900 dark:text-gray-100">Map</div>
             <div className="text-xs text-gray-500 dark:text-gray-400">Find venues & rooms</div>
-          </Link>
+          </StaticLink>
 
-          <Link href="/forum" className="rounded-xl bg-blue-600 dark:bg-blue-700 border border-blue-700 dark:border-blue-600 shadow-md p-4 hover:bg-blue-700 dark:hover:bg-blue-600 transition">
+          <StaticLink href="/forum" className="rounded-xl bg-blue-600 dark:bg-blue-700 border border-blue-700 dark:border-blue-600 shadow-md p-4 hover:bg-blue-700 dark:hover:bg-blue-600 transition">
             <div className="text-sm font-bold text-white">Forum</div>
             <div className="text-xs text-blue-100 dark:text-blue-200">Discuss sessions & speakers</div>
-          </Link>
+          </StaticLink>
 
-          <Link href="/zupass-explorer" className="rounded-xl bg-purple-600 dark:bg-purple-700 border border-purple-700 dark:border-purple-600 shadow-md p-4 hover:bg-purple-700 dark:hover:bg-purple-600 transition">
+          <StaticLink href="/zupass-explorer" className="rounded-xl bg-purple-600 dark:bg-purple-700 border border-purple-700 dark:border-purple-600 shadow-md p-4 hover:bg-purple-700 dark:hover:bg-purple-600 transition">
             <div className="text-sm font-bold text-white">Zupass Explorer</div>
             <div className="text-xs text-purple-100 dark:text-purple-200">Connect & explore your PODs</div>
-          </Link>
+          </StaticLink>
 
-          <Link href="/verify-ticket" className="rounded-xl bg-purple-600 dark:bg-purple-700 border border-purple-700 dark:border-purple-600 shadow-md p-4 hover:bg-purple-700 dark:hover:bg-purple-600 transition">
+          <StaticLink href="/verify-ticket" className="rounded-xl bg-purple-600 dark:bg-purple-700 border border-purple-700 dark:border-purple-600 shadow-md p-4 hover:bg-purple-700 dark:hover:bg-purple-600 transition">
             <div className="text-sm font-bold text-white">Verify Ticket</div>
             <div className="text-xs text-purple-100 dark:text-purple-200">Upload & verify POD tickets</div>
-          </Link>
+          </StaticLink>
 
-          <Link href="/profile" className="rounded-xl bg-blue-600 dark:bg-blue-700 border border-blue-700 dark:border-blue-600 shadow-md p-4 hover:bg-blue-700 dark:hover:bg-blue-600 transition">
+          <StaticLink href="/profile" className="rounded-xl bg-blue-600 dark:bg-blue-700 border border-blue-700 dark:border-blue-600 shadow-md p-4 hover:bg-blue-700 dark:hover:bg-blue-600 transition">
             <div className="text-sm font-bold text-white">Settings</div>
             <div className="text-xs text-blue-100 dark:text-blue-200">Update your profile</div>
-          </Link>
+          </StaticLink>
         </section>
 
         {/* Testing: forget identity */}

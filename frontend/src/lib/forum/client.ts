@@ -8,6 +8,7 @@
 
 import { BEE_URL } from "@/config/swarm"
 import type { SignedPostPayload, SignatureType } from "./types"
+import type { CapabilityBundle } from "@/lib/auth/types"
 
 export type CanonicalPost = {
   kind: "post"
@@ -103,8 +104,9 @@ export async function submitPost(
     payload: SignedPostPayload;
     signature: `0x${string}`;
     signatureType: SignatureType;
+    capability?: CapabilityBundle; // For web3 users - proves authorization
   },
-  extraHeaders?: Record<string, string> // ← NEW
+  extraHeaders?: Record<string, string>
 ) {
   const { apiUrl } = await import("@/config/api");
   const t0 = performance.now(); // start timing the network round trip
@@ -113,7 +115,7 @@ export async function submitPost(
     method: "POST",
     headers: {
       "content-type": "application/json",
-      ...(extraHeaders ?? {}), // ← NEW: merge web3 headers when provided
+      ...(extraHeaders ?? {}),
     },
     body: JSON.stringify(body),
   });

@@ -15,7 +15,7 @@
 import { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
-import Link from "next/link";
+import StaticLink from "@/components/StaticLink";
 import usePostingIdentity from "@/lib/auth/usePostingIdentity";
 import ThemeToggle from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
@@ -264,9 +264,9 @@ export default function CreateCollectiblePage() {
           <p className="text-sm text-gray-600 dark:text-gray-400">
             You need to be logged in to create collectibles.
           </p>
-          <Link href="/">
+          <StaticLink href="/">
             <Button>Go to Login</Button>
-          </Link>
+          </StaticLink>
         </div>
       </div>
     );
@@ -276,9 +276,9 @@ export default function CreateCollectiblePage() {
     <main className="min-h-dvh bg-neutral-50 dark:bg-gray-900 pb-20 transition-colors">
       <header className="sticky top-0 z-10 bg-white/80 dark:bg-gray-800/80 backdrop-blur border-b dark:border-gray-700">
         <div className="mx-auto max-w-3xl px-4 h-14 flex items-center justify-between">
-          <Link href="/dashboard" className="font-semibold text-gray-900 dark:text-gray-100">
+          <StaticLink href="/dashboard" className="font-semibold text-gray-900 dark:text-gray-100">
             ← Back
-          </Link>
+          </StaticLink>
           <ThemeToggle />
         </div>
       </header>

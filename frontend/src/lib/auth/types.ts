@@ -106,4 +106,5 @@ export interface UsePostingIdentity {
   logout: () => Promise<void>;
   signPost: (payload: Uint8Array | string) => Promise<string>;
   getWalletForPOD: () => Promise<{ privateKey?: string; seed?: string } | null>;
+  getCapabilityBundle: () => Promise<CapabilityBundle | null>;
 }

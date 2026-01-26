@@ -8,7 +8,7 @@
 // - Renders a Composer to start a new thread
 // -----------------------------------------------------------------------------
 
-import Link from "next/link"
+import StaticLink from "@/components/StaticLink"
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { BOARD_ID } from "@/lib/forum/boardID"
@@ -169,7 +169,7 @@ export default function BoardPage() {
           const authorLc = author.toLowerCase()
 
           return (
-            <Link key={ref} href={`/forum/${ref}`} className="block hover:opacity-90 transition">
+            <StaticLink key={ref} href={`/forum/${ref}`} className="block hover:opacity-90 transition">
               <PostItem
                 refHex={ref}
                 author={c?.payload.subject ?? "(unknown)"}
@@ -195,7 +195,7 @@ export default function BoardPage() {
                   });
                 }}
               />
-            </Link>
+            </StaticLink>
           )
         })}
       </section>

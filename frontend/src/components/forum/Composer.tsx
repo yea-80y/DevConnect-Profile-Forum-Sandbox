@@ -185,7 +185,10 @@ export function Composer(props: {
       ;(async () => {
         const tNet0 = performance.now()
         try {
-          const extraHeaders =
+          // For web3 users, get the capability bundle to prove authorization
+          const capability = id.kind === "web3" ? await id.getCapabilityBundle() : undefined;
+
+          const extraHeaders: Record<string, string> | undefined =
             id.kind === "web3"
               ? {
                   "x-posting-kind": "web3",
@@ -193,10 +196,17 @@ export function Composer(props: {
                   "x-posting-key": id.safe!,        // posting key (signer)
                   "x-posting-auth": "parent-bound", // you already gate the button on this
                 }
+              : id.kind === "local"
+              ? { "x-posting-kind": "local" }
               : undefined;
 
           const res = await submitPost(
-            { payload, signature, signatureType: "eip191" },
+            {
+              payload,
+              signature,
+              signatureType: "eip191",
+              capability: capability ?? undefined,
+            },
             extraHeaders
           );
           console.log("[compose] /api/forum/post ms", Math.round(performance.now() - tNet0))

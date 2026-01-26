@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Wallet, HDNodeWallet } from "ethers";
-import type { UsePostingIdentity, AuthKind, PostAuth, EncryptedJSON } from "./types";
+import type { UsePostingIdentity, AuthKind, PostAuth, EncryptedJSON, CapabilityBundle } from "./types";
 import { K_ENC_KEYSTORE, K_ENC_CAP, K_POD_SEED, K_KIND, K_PARENT } from "./constants";
 import { getKV, putKV, delKV } from "./storage/indexeddb";
 import { ensureDeviceKey, encryptJSON, decryptJSON } from "./storage/encryption";
@@ -310,6 +310,31 @@ export function usePostingIdentity(): UsePostingIdentity {
     return { privateKey: w.privateKey };
   }, [kind]);
 
+  const getCapabilityBundle = useCallback(async (): Promise<CapabilityBundle | null> => {
+    // Only web3 users have capability bundles
+    if (kind !== "web3") return null;
+
+    try {
+      const deviceKey = await ensureDeviceKey();
+      const encCap = await getKV<EncryptedJSON>(K_ENC_CAP);
+
+      if (!encCap) {
+        console.warn("[getCapabilityBundle] No capability stored");
+        return null;
+      }
+
+      const { capability, parentSig } = await decryptJSON<{
+        capability: CapabilityBundle["message"];
+        parentSig: string;
+      }>(deviceKey, encCap);
+
+      return { message: capability, parentSig };
+    } catch (e) {
+      console.error("[getCapabilityBundle] Failed to load capability:", e);
+      return null;
+    }
+  }, [kind]);
+
   /* ============================
    * Logout
    * ============================ */
@@ -383,6 +408,7 @@ export function usePostingIdentity(): UsePostingIdentity {
       logout,
       signPost,
       getWalletForPOD,
+      getCapabilityBundle,
     }),
     [
       ready,
@@ -400,6 +426,7 @@ export function usePostingIdentity(): UsePostingIdentity {
       logout,
       signPost,
       getWalletForPOD,
+      getCapabilityBundle,
     ]
   );
 }
